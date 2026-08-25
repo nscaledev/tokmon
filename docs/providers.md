@@ -60,3 +60,16 @@ provider's own files.
 The daemon resolves one canonical identity for each account and sends it to all
 clients. Privacy mode replaces identifying text at presentation time; it does
 not create a second account model.
+
+## Proxy quota endpoints
+
+A manual Claude or Codex account may replace its live provider quota request
+with a compatible proxy endpoint. Claude endpoints must end at
+`/api/oauth/usage`. Codex endpoints must end at
+`/backend-api/wham/usage`. Tokmon parses the normal provider response shape, so
+the dashboard and menu bar use the same quota metrics as a direct account.
+
+Configure the API key by environment variable name. For example, use
+`CLIPROXY_API_KEY` in the account editor and start Tokmon with that variable in
+its environment. Tokmon never writes the variable's value to `config.json` or
+sends it through its daemon protocol.

@@ -10,6 +10,7 @@ import { numberValue, percentMetric } from '../_shared/metric'
 import { epochMilliseconds, msToIso } from '../_shared/time'
 import { readMacKeychainRaw } from '../_shared/keychain'
 import { codexHomes } from './usage'
+import { fetchQuotaSource } from '../_shared/quota-source'
 
 const USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 const RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'
@@ -331,6 +332,23 @@ async function snapshotBilling(homeDir?: string, auth: CodexAuth | null = null):
 }
 
 export async function codexBilling(account: Account): Promise<BillingResult> {
+  if (account.quotaSource) {
+    const fetched = await fetchQuotaSource(account.quotaSource, {
+      'OpenAI-Beta': 'codex-1',
+      originator: 'Codex Desktop',
+    })
+    if (!fetched.ok) return { plan: null, metrics: [], error: fetched.error }
+    const res = fetched.response
+    if (res.status === 429) return { plan: null, metrics: [], error: 'Rate limited — retrying next poll' }
+    if (res.status === 401) return { plan: null, metrics: [], error: 'API key rejected' }
+    if (!res.ok) return { plan: null, metrics: [], error: `API ${res.status}` }
+    const data = await readJson<any>(res)
+    if (!data) return { plan: null, metrics: [], error: 'Unexpected API response' }
+    const metrics = codexWindowMetrics(data.rate_limit ?? data)
+    appendCredits(metrics, data)
+    if (metrics.length === 0) return { plan: chatGptPlanLabel(data.plan_type), metrics: [], error: 'Unexpected API response' }
+    return { plan: chatGptPlanLabel(data.plan_type), metrics, error: null }
+  }
   const auth = await getAuth(account.homeDir)
   const failure: { status?: number } = {}
   if (auth) {

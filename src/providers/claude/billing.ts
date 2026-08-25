@@ -10,6 +10,7 @@ import { epochMilliseconds, msToIso } from '../_shared/time'
 import { readMacKeychainFileRaw, readMacKeychainRaw } from '../_shared/keychain'
 import { readClaudeIdentity } from './identity'
 import { claudeConfigDirs } from './usage'
+import { fetchQuotaSource } from '../_shared/quota-source'
 
 interface UsageWindow {
   utilization?: unknown
@@ -347,6 +348,12 @@ function decimalScale(value: unknown): number {
 
 export async function claudeBilling(account: Account): Promise<BillingResult> {
   const identity = readClaudeIdentity(account.homeDir)
+  if (account.quotaSource) {
+    const fetched = await fetchQuotaSource(account.quotaSource, { 'anthropic-beta': 'oauth-2025-04-20' })
+    const plan = identity.plan ?? null
+    if (!fetched.ok) return { plan, metrics: [], error: fetched.error, ...identityFields(identity) }
+    return claudeUsageResponse(fetched.response, plan, identity, 'API key rejected')
+  }
   const { auth, sharedAccountEmail, expired } = await getAuth(account.homeDir, identity.accountUuid)
   if (!auth) {
     const error = sharedAccountEmail !== undefined
@@ -368,36 +375,41 @@ export async function claudeBilling(account: Account): Promise<BillingResult> {
       signal: AbortSignal.timeout(10000),
     })
 
-    if (res.status === 429) {
-      const retryAfter = numberValue(res.headers.get('retry-after'))
-      const retryText = retryAfter !== undefined ? ` — retry in ~${Math.ceil(retryAfter / 60)}m` : ' — retrying next poll'
-      return { plan, metrics: [], error: `Rate limited${retryText}`, ...identityFields(identity) }
-    }
-    if (res.status === 401) return { plan, metrics: [], error: 'Token expired — run claude to refresh', ...identityFields(identity) }
-    if (!res.ok) return { plan, metrics: [], error: `API ${res.status}`, ...identityFields(identity) }
-
-    const data = await readJson<OAuthResponse>(res)
-    if (!data || typeof data !== 'object' || Array.isArray(data)) return { plan, metrics: [], error: 'Unexpected API response', ...identityFields(identity) }
-    const metrics: Metric[] = limitMetrics(data.limits)
-    if (metrics.length === 0) metrics.push(...topLevelUsageMetrics(data))
-    if (boolValue(data.extra_usage?.is_enabled)) {
-      const usedCredits = numberValue(data.extra_usage?.used_credits)
-      const monthlyLimit = numberValue(data.extra_usage?.monthly_limit)
-      if (usedCredits !== undefined && (usedCredits > 0 || (monthlyLimit !== undefined && monthlyLimit > 0))) {
-        const scale = decimalScale(data.extra_usage?.decimal_places)
-        metrics.push({
-          key: 'extra_usage',
-          role: 'unbounded',
-          label: 'Extra',
-          used: finite(usedCredits) / scale,
-          limit: monthlyLimit !== undefined && monthlyLimit > 0 ? monthlyLimit / scale : null,
-          format: { kind: 'dollars', currency: data.extra_usage?.currency ?? 'USD' },
-        })
-      }
-    }
-
-    return { plan, metrics, error: null, ...identityFields(identity) }
+    return claudeUsageResponse(res, plan, identity, 'Token expired — run claude to refresh')
   } catch {
     return { plan, metrics: [], error: 'Network error', ...identityFields(identity) }
   }
+}
+
+async function claudeUsageResponse(
+  res: Response,
+  plan: string | null,
+  identity: ReturnType<typeof readClaudeIdentity>,
+  unauthorizedError: string,
+): Promise<BillingResult> {
+  if (res.status === 429) {
+    const retryAfter = numberValue(res.headers.get('retry-after'))
+    const retryText = retryAfter !== undefined ? ` — retry in ~${Math.ceil(retryAfter / 60)}m` : ' — retrying next poll'
+    return { plan, metrics: [], error: `Rate limited${retryText}`, ...identityFields(identity) }
+  }
+  if (res.status === 401) return { plan, metrics: [], error: unauthorizedError, ...identityFields(identity) }
+  if (!res.ok) return { plan, metrics: [], error: `API ${res.status}`, ...identityFields(identity) }
+
+  const data = await readJson<OAuthResponse>(res)
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return { plan, metrics: [], error: 'Unexpected API response', ...identityFields(identity) }
+  const metrics: Metric[] = limitMetrics(data.limits)
+  if (metrics.length === 0) metrics.push(...topLevelUsageMetrics(data))
+  if (boolValue(data.extra_usage?.is_enabled)) {
+    const usedCredits = numberValue(data.extra_usage?.used_credits)
+    const monthlyLimit = numberValue(data.extra_usage?.monthly_limit)
+    if (usedCredits !== undefined && (usedCredits > 0 || (monthlyLimit !== undefined && monthlyLimit > 0))) {
+      const scale = decimalScale(data.extra_usage?.decimal_places)
+      metrics.push({
+        key: 'extra_usage', role: 'unbounded', label: 'Extra', used: finite(usedCredits) / scale,
+        limit: monthlyLimit !== undefined && monthlyLimit > 0 ? monthlyLimit / scale : null,
+        format: { kind: 'dollars', currency: data.extra_usage?.currency ?? 'USD' },
+      })
+    }
+  }
+  return { plan, metrics, error: null, ...identityFields(identity) }
 }

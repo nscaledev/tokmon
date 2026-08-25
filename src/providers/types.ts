@@ -1,4 +1,5 @@
 import type { DashboardData, TableData } from '../types'
+import type { QuotaSourceConfig } from '../config-schema'
 
 export const PROVIDER_IDS = ['claude', 'codex', 'cursor', 'copilot', 'pi', 'opencode', 'antigravity', 'gemini', 'grok'] as const
 
@@ -12,6 +13,7 @@ export interface Account {
   homeDir?: string
   /** Runtime provenance. Provider readers stay source-agnostic; clients use it for lifecycle actions. */
   source?: 'auto' | 'configured'
+  quotaSource?: QuotaSourceConfig
 }
 
 export type MetricFormat =

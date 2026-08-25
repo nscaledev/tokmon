@@ -15,7 +15,7 @@ import {
 } from './snapshot-materialize'
 
 /**
- * Snapshot delta protocol (wire protocol v5).
+ * Snapshot delta protocol (introduced in wire protocol v5).
  *
  * The daemon's snapshot is dominated by three heavy per-account sections
  * (dashboard / table / billing) that only change when their refresh loop

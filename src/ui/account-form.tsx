@@ -6,7 +6,7 @@ import type { ProviderId } from '../providers/types'
 import { CaretText } from './shared'
 import { useTuiTheme } from './theme'
 
-export type FormField = 'provider' | 'name' | 'homeDir' | 'color'
+export type FormField = 'provider' | 'name' | 'homeDir' | 'quotaUrl' | 'apiKeyEnv' | 'color'
 
 export interface AccountForm {
   mode: 'add' | 'edit'
@@ -14,6 +14,9 @@ export interface AccountForm {
   providerId: ProviderId
   name: string
   homeDir: string
+  quotaUrl?: string
+  apiKeyEnv?: string
+  hadQuotaSource?: boolean
   color: string
   caret: number
   editingId: string | null
@@ -22,7 +25,7 @@ export interface AccountForm {
   error: string | null
 }
 
-export const FORM_FIELDS: FormField[] = ['provider', 'name', 'homeDir', 'color']
+export const FORM_FIELDS: FormField[] = ['provider', 'name', 'homeDir', 'quotaUrl', 'apiKeyEnv', 'color']
 
 export function AccountFormView({ form, accounts }: { form: AccountForm; accounts: Account[] }) {
   const theme = useTuiTheme()
@@ -30,7 +33,7 @@ export function AccountFormView({ form, accounts }: { form: AccountForm; account
     ? generateAccountId(form.name || 'account', accounts)
     : form.editingId ?? ''
   const accent = form.color
-  const stepIndex: Record<FormField, number> = { provider: 1, name: 2, homeDir: 3, color: 4 }
+  const stepIndex: Record<FormField, number> = { provider: 1, name: 2, homeDir: 3, quotaUrl: 4, apiKeyEnv: 5, color: 6 }
   const step = stepIndex[form.field]
 
   return (
@@ -38,7 +41,7 @@ export function AccountFormView({ form, accounts }: { form: AccountForm; account
       <Box>
         <Text color={accent} bold>{glyphs().vbar}</Text>
         <Text bold>{' '}{form.mode === 'add' ? 'NEW ACCOUNT' : 'EDIT ACCOUNT'}</Text>
-        <Text dimColor>   step {step} of 4</Text>
+        <Text dimColor>   step {step} of 6</Text>
       </Box>
       <Box marginTop={1}><Stepper active={form.field} accent={accent} /></Box>
 
@@ -50,6 +53,12 @@ export function AccountFormView({ form, accounts }: { form: AccountForm; account
         <Box height={1} />
         <FormField label="Home directory" hint={`path containing the tool's data dir  ${glyphs().middot}  ~ for default`} value={form.homeDir}
           focused={form.field === 'homeDir'} caret={form.caret} accent={accent} placeholder="~/work" mono />
+        <Box height={1} />
+        <FormField label="Quota endpoint" hint="optional exact Claude or Codex usage URL" value={form.quotaUrl ?? ''}
+          focused={form.field === 'quotaUrl'} caret={form.caret} accent={accent} placeholder="https://proxy.example/api/oauth/usage" mono />
+        <Box height={1} />
+        <FormField label="API key environment variable" hint="the secret stays outside Tokmon's config" value={form.apiKeyEnv ?? ''}
+          focused={form.field === 'apiKeyEnv'} caret={form.caret} accent={accent} placeholder="CLIPROXY_API_KEY" mono />
         <Box height={1} />
         <ColorField value={form.color} focused={form.field === 'color'} />
         <Box height={1} />
@@ -82,6 +91,8 @@ function Stepper({ active, accent }: { active: FormField; accent: string }) {
     { id: 'provider', label: 'Provider' },
     { id: 'name', label: 'Name' },
     { id: 'homeDir', label: 'Home' },
+    { id: 'quotaUrl', label: 'Quota URL' },
+    { id: 'apiKeyEnv', label: 'Key env' },
     { id: 'color', label: 'Color' },
   ]
   const activeIdx = steps.findIndex(s => s.id === active)

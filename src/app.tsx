@@ -288,10 +288,10 @@ export function App({ interval: cliInterval, initialConfig, baseUrl = null, mode
     !!input && !key.ctrl && !key.meta && !isPasteInput(input)
 
   const insertText = (text: string): void => {
-    if (showSettings && accountForm && (accountForm.field === 'name' || accountForm.field === 'homeDir')) {
+    if (showSettings && accountForm && ['name', 'homeDir', 'quotaUrl', 'apiKeyEnv'].includes(accountForm.field)) {
       setAccountForm(f => {
-        if (!f || (f.field !== 'name' && f.field !== 'homeDir')) return f
-        const r = spliceInsert(f[f.field], f.caret, text)
+        if (!f || (f.field !== 'name' && f.field !== 'homeDir' && f.field !== 'quotaUrl' && f.field !== 'apiKeyEnv')) return f
+        const r = spliceInsert(f[f.field] ?? '', f.caret, text)
         return { ...f, [f.field]: r.value, caret: r.caret, error: null }
       })
     } else if (showSettings && tzEdit !== null) {

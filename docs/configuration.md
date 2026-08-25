@@ -40,7 +40,17 @@ exclusion does not sign out, delete provider files, or affect sibling accounts;
 removed accounts remain available under **Restore**. Turning discovery off is
 broader and hides every automatically detected account.
 
-Manual accounts support provider, display name, home directory, accent color,
+Manual Claude and Codex accounts can read quota from an API-key-authenticated
+proxy. Set the exact quota endpoint and the name of an environment variable that
+contains its API key. Tokmon stores the URL and environment variable name, not
+the key. The daemon process must receive that variable when it starts.
+
+The accepted endpoint paths are `/api/oauth/usage` for Claude and
+`/backend-api/wham/usage` for Codex. Remote endpoints require HTTPS. Plain HTTP
+is accepted only on loopback addresses. URLs with credentials, query strings,
+fragments, or a different path are rejected.
+
+Manual accounts also support display name, home directory, accent color,
 enable/disable, and ordering.
 
 ## Desktop

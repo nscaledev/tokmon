@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 import { DEFAULTS, normalizeConfig, repairConfig, type Config, type Account } from './config-schema'
 
 export type {
-  Config, Account, TrayConfig, MenuBarConfig, MenuBarMode, MenuBarDensity,
+  Config, Account, QuotaSourceConfig, TrayConfig, MenuBarConfig, MenuBarMode, MenuBarDensity,
   MenuBarElement, MenuBarSpacingField,
   AccountDetectionConfig, DetectedAccountRef, DesktopGraphRange,
 } from './config-schema'
@@ -38,6 +38,7 @@ export {
   repairMenuBarConfig,
   normalizeAllowedHost,
   normalizeAllowedHosts,
+  normalizeQuotaSource,
   slugify,
   generateAccountId,
   pickAccentColor,

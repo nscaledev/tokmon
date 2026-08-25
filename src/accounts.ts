@@ -17,8 +17,13 @@ interface DiscoveredAccount {
   source: 'auto'
 }
 
-function accountKey(providerId: ProviderId, homeDir?: string): string {
+function accountHomeKey(providerId: ProviderId, homeDir?: string): string {
   return `${providerId}:${homeDir ? resolve(expandHome(homeDir)) : homedir()}`
+}
+
+function accountKey(providerId: ProviderId, homeDir?: string, quotaSource?: Account['quotaSource']): string {
+  const source = quotaSource ? `${quotaSource.url}\0${quotaSource.apiKeyEnv}` : 'provider'
+  return `${accountHomeKey(providerId, homeDir)}:${source}`
 }
 
 function runtimeHomeDir(homeDir: string): string | undefined {
@@ -174,7 +179,7 @@ export function collectAccounts(config: Config, detected: ProviderId[]): Collect
   const suppressed: DetectedAccountRef[] = []
   const suppressedKeys = new Set<string>()
   const excludedByKey = new Map(
-    config.accountDetection.excludedAccounts.map(ref => [accountKey(ref.providerId, ref.homeDir), ref] as const),
+    config.accountDetection.excludedAccounts.map(ref => [accountHomeKey(ref.providerId, ref.homeDir), ref] as const),
   )
   const excludedKeys = new Set(excludedByKey.keys())
 
@@ -187,7 +192,7 @@ export function collectAccounts(config: Config, detected: ProviderId[]): Collect
   }
 
   const add = (account: Account): void => {
-    const key = accountKey(account.providerId, account.homeDir)
+    const key = accountKey(account.providerId, account.homeDir, account.quotaSource)
     if (seenKeys.has(key)) return
     let id = account.id
     if (seenIds.has(id)) {
@@ -204,9 +209,10 @@ export function collectAccounts(config: Config, detected: ProviderId[]): Collect
     if (config.disabledProviders.includes(pid)) continue
     const provider = PROVIDERS[pid]
     const configured = config.accounts.filter(a => a.providerId === pid)
+    const configuredHomes = new Set(configured.map(a => accountHomeKey(a.providerId, a.homeDir)))
     for (const a of configured) {
       if (a.enabled === false) {
-        seenKeys.add(accountKey(a.providerId, a.homeDir))
+        seenKeys.add(accountKey(a.providerId, a.homeDir, a.quotaSource ?? undefined))
         seenIds.add(a.id)
         continue
       }
@@ -217,6 +223,7 @@ export function collectAccounts(config: Config, detected: ProviderId[]): Collect
         color: a.color || provider.color,
         homeDir: runtimeHomeDir(a.homeDir || '~'),
         source: 'configured',
+        quotaSource: a.quotaSource ?? undefined,
       })
     }
 
@@ -227,13 +234,16 @@ export function collectAccounts(config: Config, detected: ProviderId[]): Collect
         id: pid, providerId: pid, name: provider.name, color: provider.color,
         homeDir: undefined, source: 'auto',
       }
+      const homeKey = accountHomeKey(pid)
       const key = accountKey(pid)
-      if (excludedKeys.has(key)) noteSuppressed(key)
+      if (configuredHomes.has(homeKey)) continue
+      if (excludedKeys.has(homeKey)) noteSuppressed(homeKey)
       else add(account)
     }
     for (const account of discovered) {
-      const key = accountKey(account.providerId, account.homeDir)
-      if (excludedKeys.has(key)) { noteSuppressed(key); continue }
+      const homeKey = accountHomeKey(account.providerId, account.homeDir)
+      if (configuredHomes.has(homeKey)) continue
+      if (excludedKeys.has(homeKey)) { noteSuppressed(homeKey); continue }
       add(account)
     }
   }

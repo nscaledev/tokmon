@@ -1,6 +1,7 @@
 import { useState, useCallback, type Dispatch, type SetStateAction } from 'react'
 import {
   COLOR_PALETTE, generateAccountId, pickAccentColor,
+  normalizeQuotaSource,
   type Config, type Account as StoredAccount, type TrackedAccountRow,
 } from '../../config'
 import { PROVIDERS, PROVIDER_ORDER, type ProviderId } from '../../providers'
@@ -17,9 +18,16 @@ export type AccountFormDefaults =
  */
 export function applyAccountForm(config: Config, form: AccountForm): Config {
   const { name, homeDir } = form
+  const hasQuotaSource = Boolean(form.quotaUrl?.trim() || form.apiKeyEnv?.trim())
+  const quotaSource = hasQuotaSource
+    ? normalizeQuotaSource({ url: form.quotaUrl, apiKeyEnv: form.apiKeyEnv }, form.providerId)
+    : form.hadQuotaSource ? null : undefined
   if (form.mode === 'add') {
     const id = generateAccountId(name, config.accounts)
-    const account: StoredAccount = { id, providerId: form.providerId, name, homeDir, color: form.color }
+    const account: StoredAccount = {
+      id, providerId: form.providerId, name, homeDir, color: form.color,
+      ...(quotaSource !== undefined ? { quotaSource } : {}),
+    }
     return {
       ...config,
       accounts: [...config.accounts, account],
@@ -32,7 +40,7 @@ export function applyAccountForm(config: Config, form: AccountForm): Config {
     ...config,
     accounts: config.accounts.map(a =>
       a.id === form.editingId
-        ? { ...a, providerId: form.providerId, name, homeDir, color: form.color }
+        ? { ...a, providerId: form.providerId, name, homeDir, color: form.color, ...(quotaSource !== undefined ? { quotaSource } : {}) }
         : a),
   }
 }
@@ -62,7 +70,7 @@ export function useAccountForm({ cfg, detected, updateConfig, trackedAccountRows
     const providerId = defaults?.providerId ?? ((detected[0] ?? 'claude') as ProviderId)
     setAccountForm({
       mode: 'add', field: 'provider', providerId,
-      name: defaults?.name ?? '', homeDir: defaults?.homeDir ?? '~', color: defaults?.color ?? pickAccentColor(cfg.accounts),
+      name: defaults?.name ?? '', homeDir: defaults?.homeDir ?? '~', quotaUrl: '', apiKeyEnv: '', hadQuotaSource: false, color: defaults?.color ?? pickAccentColor(cfg.accounts),
       caret: defaults?.name?.length ?? 0,
       editingId: null, convertedFromId: defaults?.convertedFromId ?? null, error: null,
     })
@@ -75,7 +83,7 @@ export function useAccountForm({ cfg, detected, updateConfig, trackedAccountRows
   function openEditAccount(acc: StoredAccount): void {
     setAccountForm({
       mode: 'edit', field: 'provider', providerId: acc.providerId,
-      name: acc.name, homeDir: acc.homeDir, color: acc.color || PROVIDERS[acc.providerId].color,
+      name: acc.name, homeDir: acc.homeDir, quotaUrl: acc.quotaSource?.url ?? '', apiKeyEnv: acc.quotaSource?.apiKeyEnv ?? '', hadQuotaSource: Boolean(acc.quotaSource), color: acc.color || PROVIDERS[acc.providerId].color,
       caret: acc.name.length,
       editingId: acc.id, convertedFromId: null, error: null,
     })
@@ -85,6 +93,10 @@ export function useAccountForm({ cfg, detected, updateConfig, trackedAccountRows
     const name = accountForm.name.trim()
     const homeDir = accountForm.homeDir.trim() || '~'
     if (!name) { setAccountForm({ ...accountForm, error: 'Name required', field: 'name', caret: accountForm.name.length }); return }
+    if ((accountForm.quotaUrl || accountForm.apiKeyEnv) && !normalizeQuotaSource({ url: accountForm.quotaUrl, apiKeyEnv: accountForm.apiKeyEnv }, accountForm.providerId)) {
+      setAccountForm({ ...accountForm, error: 'Quota endpoint or API key environment variable is invalid', field: 'quotaUrl', caret: accountForm.quotaUrl?.length ?? 0 })
+      return
+    }
     updateConfig(c => applyAccountForm(c, { ...accountForm, name, homeDir }))
     setAccountForm(null)
   }
@@ -93,7 +105,7 @@ export function useAccountForm({ cfg, detected, updateConfig, trackedAccountRows
       if (!f) return f
       const i = FORM_FIELDS.indexOf(f.field)
       const next = FORM_FIELDS[(i + dir + FORM_FIELDS.length) % FORM_FIELDS.length]
-      const caret = next === 'name' ? f.name.length : next === 'homeDir' ? f.homeDir.length : f.caret
+      const caret = next === 'name' ? f.name.length : next === 'homeDir' ? f.homeDir.length : next === 'quotaUrl' ? (f.quotaUrl?.length ?? 0) : next === 'apiKeyEnv' ? (f.apiKeyEnv?.length ?? 0) : f.caret
       return { ...f, field: next, caret }
     })
   }, [])

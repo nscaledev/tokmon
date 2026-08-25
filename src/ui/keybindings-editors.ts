@@ -28,11 +28,11 @@ export function handleAccountEditor(
     if (key.return) { commit(); return }
     return
   }
-  const field = form.field as 'name' | 'homeDir'
-  if (key.leftArrow) { setForm(value => value && { ...value, caret: clampCaret(value.caret - 1, value[field].length) }); return }
-  if (key.rightArrow) { setForm(value => value && { ...value, caret: clampCaret(value.caret + 1, value[field].length) }); return }
+  const field = form.field as 'name' | 'homeDir' | 'quotaUrl' | 'apiKeyEnv'
+  if (key.leftArrow) { setForm(value => value && { ...value, caret: clampCaret(value.caret - 1, (value[field] ?? '').length) }); return }
+  if (key.rightArrow) { setForm(value => value && { ...value, caret: clampCaret(value.caret + 1, (value[field] ?? '').length) }); return }
   if (key.ctrl && input === 'a') { setForm(value => value && { ...value, caret: 0 }); return }
-  if (key.ctrl && input === 'e') { setForm(value => value && { ...value, caret: value[field].length }); return }
+  if (key.ctrl && input === 'e') { setForm(value => value && { ...value, caret: (value[field] ?? '').length }); return }
   if (key.return) {
     if (field === 'name' && form.name.trim() === '') {
       setForm(value => value && { ...value, error: 'Name required', caret: value.name.length })
@@ -40,15 +40,15 @@ export function handleAccountEditor(
     }
     setForm(value => value && {
       ...value,
-      field: field === 'name' ? 'homeDir' : 'color',
-      caret: field === 'name' ? value.homeDir.length : value.caret,
+      field: field === 'name' ? 'homeDir' : field === 'homeDir' ? 'quotaUrl' : field === 'quotaUrl' ? 'apiKeyEnv' : 'color',
+      caret: field === 'name' ? value.homeDir.length : field === 'homeDir' ? (value.quotaUrl?.length ?? 0) : field === 'quotaUrl' ? (value.apiKeyEnv?.length ?? 0) : value.caret,
     })
     return
   }
   if (key.backspace || key.delete) {
     setForm(value => {
-      if (!value || (value.field !== 'name' && value.field !== 'homeDir')) return value
-      const result = spliceBackspace(value[value.field], value.caret)
+      if (!value || (value.field !== 'name' && value.field !== 'homeDir' && value.field !== 'quotaUrl' && value.field !== 'apiKeyEnv')) return value
+      const result = spliceBackspace(value[value.field] ?? '', value.caret)
       return { ...value, [value.field]: result.value, caret: result.caret, error: null }
     })
     return

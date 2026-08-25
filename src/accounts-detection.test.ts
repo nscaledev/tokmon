@@ -45,6 +45,24 @@ test('a provider detector can be disabled without disabling its manual accounts'
   )
 })
 
+test('configured accounts sharing a home remain distinct when their quota sources differ', () => {
+  const accounts = buildAccounts(config({
+    accounts: [
+      {
+        ...manual, id: 'team-a',
+        quotaSource: { url: 'https://proxy-a.example/api/oauth/usage', apiKeyEnv: 'TEAM_A_KEY' },
+      },
+      {
+        ...manual, id: 'team-b',
+        quotaSource: { url: 'https://proxy-b.example/api/oauth/usage', apiKeyEnv: 'TEAM_B_KEY' },
+      },
+    ],
+  }), ['claude'])
+
+  assert.deepEqual(accounts.filter(account => account.source === 'configured').map(account => account.id), ['team-a', 'team-b'])
+  assert.equal(accounts.filter(account => account.homeDir === manual.homeDir).some(account => account.source === 'auto'), false)
+})
+
 test('a disabled manual account stays registered without being fetched or auto-recreated', () => {
   const disabled = { ...manual, homeDir: '~', enabled: false }
   const next = config({ accounts: [disabled] })

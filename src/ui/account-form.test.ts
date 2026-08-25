@@ -61,6 +61,23 @@ test('editing an account touches neither the active selection nor the account li
   assert.equal(next.activeAccountId, 'work')
 })
 
+test('account form stores and clears a valid custom quota source without storing a key', () => {
+  const config: Config = { ...structuredClone(DEFAULTS) }
+  const added = applyAccountForm(config, {
+    ...formFor(autoRow), quotaUrl: 'https://proxy.example/api/oauth/usage', apiKeyEnv: 'CLIPROXY_KEY',
+  })
+  assert.deepEqual(added.accounts[0]?.quotaSource, {
+    url: 'https://proxy.example/api/oauth/usage', apiKeyEnv: 'CLIPROXY_KEY',
+  })
+  assert.equal(JSON.stringify(added).includes('actual-secret'), false)
+
+  const cleared = applyAccountForm(added, {
+    ...formFor(autoRow), mode: 'edit', editingId: added.accounts[0]!.id, convertedFromId: null,
+    quotaUrl: '', apiKeyEnv: '', hadQuotaSource: true,
+  })
+  assert.equal(cleared.accounts[0]?.quotaSource, null)
+})
+
 test('the conversion produces exactly one row for the converted home', () => {
   const config: Config = { ...structuredClone(DEFAULTS), activeAccountId: autoRow.id }
   const next = applyAccountForm(config, formFor(autoRow))

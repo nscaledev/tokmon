@@ -64,3 +64,43 @@ test('an unset active selection is not captured by a conversion', () => {
 
   assert.equal(submit(cfg).activeAccountId, null)
 })
+
+test('the account editor round-trips custom quota endpoint configuration', () => {
+  const cfg: Config = { ...structuredClone(DEFAULTS) }
+  const added = submit(cfg, {
+    ...newDraft(cfg, { providerId: 'codex', name: 'Proxy', homeDir: '~' }),
+    quotaUrl: 'https://proxy.example/backend-api/wham/usage',
+    apiKeyEnv: 'CLIPROXY_API_KEY',
+  })
+  assert.deepEqual(added.accounts[0]?.quotaSource, {
+    url: 'https://proxy.example/backend-api/wham/usage', apiKeyEnv: 'CLIPROXY_API_KEY',
+  })
+  const draft = toDraft(added.accounts[0]!)
+  assert.equal(draft.quotaUrl, 'https://proxy.example/backend-api/wham/usage')
+  assert.equal(draft.apiKeyEnv, 'CLIPROXY_API_KEY')
+})
+
+test('the account editor rejects a quota URL for the wrong provider endpoint', () => {
+  const cfg: Config = { ...structuredClone(DEFAULTS) }
+  const result = buildAccountFromDraft({
+    ...newDraft(cfg, { providerId: 'codex', name: 'Proxy' }),
+    quotaUrl: 'https://proxy.example/api/oauth/usage', apiKeyEnv: 'CLIPROXY_API_KEY',
+  }, [])
+  assert.deepEqual(result, { ok: false, error: 'Quota endpoint or API key environment variable is invalid' })
+})
+
+test('ordinary accounts omit the deletion marker sent only when a source is cleared', () => {
+  const cfg: Config = { ...structuredClone(DEFAULTS) }
+  const ordinary = buildAccountFromDraft(newDraft(cfg, { providerId: 'claude', name: 'Ordinary' }), [])
+  assert.ok(ordinary.ok)
+  assert.equal(Object.prototype.hasOwnProperty.call(ordinary.account, 'quotaSource'), false)
+  assert.equal(ordinary.account.quotaSource, undefined)
+
+  const withSource = {
+    id: 'proxy', providerId: 'claude' as const, name: 'Proxy', homeDir: '~', color: 'green',
+    quotaSource: { url: 'https://proxy.example/api/oauth/usage', apiKeyEnv: 'CLIPROXY_KEY' },
+  }
+  const cleared = buildAccountFromDraft({ ...toDraft(withSource), quotaUrl: '', apiKeyEnv: '' }, [withSource])
+  assert.ok(cleared.ok)
+  assert.equal(cleared.account.quotaSource, null)
+})

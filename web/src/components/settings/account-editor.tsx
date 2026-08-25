@@ -97,6 +97,20 @@ export function AccountEditor({ editor, accounts, onChange, onCancel, onSubmit }
             />
           </Field>
 
+          <Field label="Quota endpoint" hint="optional exact Claude or Codex usage URL">
+            <input type="url" name="account-quota-endpoint" value={editor.quotaUrl}
+              placeholder="https://proxy.example/api/oauth/usage" autoComplete="off" spellCheck={false}
+              onChange={e => { setError(null); onChange({ ...editor, quotaUrl: sanitizeTyped(e.target.value) }) }}
+              className={`w-full rounded border border-line bg-bg-2 px-2.5 py-1.5 font-mono text-sm text-fg ${FOCUS_RING}`} />
+          </Field>
+
+          <Field label="API key environment variable" hint="Tokmon reads the secret from the daemon environment">
+            <input type="text" name="account-api-key-env" value={editor.apiKeyEnv}
+              placeholder="CLIPROXY_API_KEY" autoComplete="off" spellCheck={false}
+              onChange={e => { setError(null); onChange({ ...editor, apiKeyEnv: sanitizeTyped(e.target.value) }) }}
+              className={`w-full rounded border border-line bg-bg-2 px-2.5 py-1.5 font-mono text-sm text-fg ${FOCUS_RING}`} />
+          </Field>
+
           <Field label="Accent color" hint="shows on dashboard, account strip, borders">
             <div className="flex flex-wrap gap-1.5">
               {COLOR_PALETTE.map(c => {

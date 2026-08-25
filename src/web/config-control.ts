@@ -112,9 +112,11 @@ function mergeCapabilityFields(incomingConfig: Config, current: Config): Record<
   const accounts = hasOwn(incoming, 'accounts') && Array.isArray(incoming.accounts)
     ? incoming.accounts.map(account => {
         const previous = currentAccounts.get(account.id)
-        return !hasOwn(account, 'enabled') && previous?.enabled === false
-          ? { ...account, enabled: false }
-          : account
+        return {
+          ...account,
+          ...(!hasOwn(account, 'enabled') && previous?.enabled === false ? { enabled: false } : {}),
+          ...(!hasOwn(account, 'quotaSource') && previous?.quotaSource ? { quotaSource: previous.quotaSource } : {}),
+        }
       })
     : current.accounts
 

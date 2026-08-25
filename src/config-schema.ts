@@ -21,6 +21,14 @@ export interface Account {
   color?: string
   /** Manual account intent. Omitted means enabled for backwards compatibility. */
   enabled?: boolean
+  /** Optional API-key-authenticated provider quota endpoint. The key itself stays in the environment. */
+  /** `null` is a transient RPC deletion marker; normalized persisted config omits it. */
+  quotaSource?: QuotaSourceConfig | null
+}
+
+export interface QuotaSourceConfig {
+  url: string
+  apiKeyEnv: string
 }
 
 export type MenuBarMode = 'auto' | 'custom'
@@ -526,6 +534,33 @@ export function normalizeAllowedHosts(value: unknown): string[] {
   return [...new Set(hosts)]
 }
 
+const API_KEY_ENV_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+function loopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (normalized === 'localhost' || normalized === '::1') return true
+  const octets = normalized.split('.')
+  return octets.length === 4
+    && octets[0] === '127'
+    && octets.every(octet => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
+}
+
+export function normalizeQuotaSource(value: unknown, providerId: ProviderId): QuotaSourceConfig | null {
+  if ((providerId !== 'claude' && providerId !== 'codex') || !isRecord(value)) return null
+  if (typeof value.url !== 'string' || typeof value.apiKeyEnv !== 'string') return null
+  const apiKeyEnv = value.apiKeyEnv.trim()
+  if (!API_KEY_ENV_RE.test(apiKeyEnv)) return null
+  try {
+    const url = new URL(value.url.trim())
+    const expectedPath = providerId === 'claude' ? '/api/oauth/usage' : '/backend-api/wham/usage'
+    if (url.pathname !== expectedPath || url.username || url.password || url.search || url.hash) return null
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopbackHostname(url.hostname))) return null
+    return { url: url.toString(), apiKeyEnv }
+  } catch {
+    return null
+  }
+}
+
 export function repairConfig(input: unknown): ConfigRepair {
   const reasons: string[] = []
   const parsed = isRecord(input) ? input : {}
@@ -556,6 +591,8 @@ export function repairConfig(input: unknown): ConfigRepair {
       return
     }
     accountIds.add(id)
+    const quotaSource = normalizeQuotaSource(raw.quotaSource, providerId)
+    if (raw.quotaSource !== undefined && quotaSource === null) reasons.push(`accounts[${index}].quotaSource was invalid`)
     accounts.push({
       id,
       providerId,
@@ -566,6 +603,7 @@ export function repairConfig(input: unknown): ConfigRepair {
       // account that arrives without the key (web/config-control.ts), so dropping it here
       // turned "enable this account" into a no-op for callers that normalize before writing.
       ...(typeof raw.enabled === 'boolean' ? { enabled: raw.enabled } : {}),
+      ...(quotaSource ? { quotaSource } : {}),
     })
   })
 

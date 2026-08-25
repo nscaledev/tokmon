@@ -24,7 +24,7 @@ export { MONTHS } from '../shared/format'
 export { dayKey, mondayDayIndex, systemTimezone, weekStartDayKey } from '../tz'
 
 export type {
-  Config, Account, TrayConfig, MenuBarConfig, MenuBarMode, MenuBarDensity,
+  Config, Account, QuotaSourceConfig, TrayConfig, MenuBarConfig, MenuBarMode, MenuBarDensity,
   MenuBarElement, MenuBarSpacingField,
   AccountDetectionConfig, DetectedAccountRef, DesktopGraphRange,
   TrackedAccountRow, TrackedAccountSource,
@@ -34,6 +34,7 @@ export {
   normalizeConfig,
   normalizeAllowedHost,
   normalizeAllowedHosts,
+  normalizeQuotaSource,
   repairConfig,
   repairMenuBarConfig,
   DEFAULTS,
