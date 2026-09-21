@@ -249,7 +249,8 @@ async function parseFile(path: string, ignoreReadErrors = true): Promise<Entry[]
       const info = obj?.payload?.info
       const total = recordTotal ?? normalizeUsage(info?.total_token_usage)
       const last = normalizeUsage(recordTotal ? obj.payload.usage : info?.last_token_usage)
-      const tsValue = obj.timestamp ?? obj?.payload?.timestamp
+      const ts = findTimestamp(obj)
+      if (ts === null) continue
 
       const sig = eventSig(last, total)
       if (sig === prevSig
@@ -263,9 +264,6 @@ async function parseFile(path: string, ignoreReadErrors = true): Promise<Entry[]
       }
       if (total) prevTotal = total
       if (!d) continue
-
-      const ts = timestampMs(tsValue)
-      if (ts === null) continue
 
       const m = extractModel(obj)
       if (typeof m === 'string' && m.trim()) model = m

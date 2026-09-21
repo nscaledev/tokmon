@@ -162,3 +162,32 @@ test('Codex structured records without cumulative totals retain distinct request
     assert.equal(table.daily[0].count, 2)
   }
 })
+
+for (const field of ['invalid', 'created_at', 'createdAt', 'time']) {
+  test(`Codex ${field} record timestamps do not lose valid cumulative usage`, async t => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'tokmon-codex-timestamps-'))
+    t.after(() => rm(homeDir, { recursive: true, force: true }))
+    const sessions = join(homeDir, '.codex', 'sessions')
+    await mkdir(sessions, { recursive: true })
+    const sessionId = 'timestamp-usage-fixture'
+    const timestamp = '2026-01-02T00:00:00Z'
+    const usage = { input_tokens: 17, cached_input_tokens: 5, output_tokens: 3, total_tokens: 20 }
+    const rows = [
+      { type: 'session_meta', payload: { id: sessionId } },
+      { ...(field === 'invalid' ? { timestamp: 'bad timestamp' } : { [field]: timestamp }),
+        type: 'token_usage_record', payload: { usage, thread_token_usage: usage } },
+      ...(field === 'invalid' ? [{ timestamp, type: 'event_msg', payload: { type: 'token_count', info: {
+        last_token_usage: usage, total_token_usage: usage,
+      } } }] : []),
+      { timestamp: '2026-01-02T00:00:01Z', type: 'event_msg', payload: { type: 'token_count', info: {
+        total_token_usage: { input_tokens: 21, cached_input_tokens: 8, output_tokens: 4, total_tokens: 25 },
+      } } },
+    ]
+    await writeFile(join(sessions, `${sessionId}.jsonl`), rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+    for (const table of [await codexTable('UTC', homeDir), await codexSessionTable('UTC', sessionId, homeDir)]) {
+      assert.ok(table)
+      assert.equal(table.daily[0].total, 25)
+      assert.equal(table.daily[0].count, 2)
+    }
+  })
+}
