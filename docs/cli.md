@@ -51,7 +51,8 @@ currently exposes Codex cache reads; its cache-create count remains zero.
 The first query discovers the matching transcript or fetches Cursor events.
 Later queries reread that transcript; Cursor events may be cached for 60 seconds.
 `--refresh` bypasses Cursor's event cache and also refreshes account usage and
-billing. `--cached` reads only the daemon's last result for that exact session:
+billing, so a cold `--refresh` can take longer; increase `--timeout` if needed.
+`--cached` reads only the daemon's last result for that exact session:
 run a query without it first. This cache is bounded, in memory, and cleared when
 the daemon restarts or account configuration changes.
 
