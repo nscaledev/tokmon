@@ -217,7 +217,7 @@ async function parseFile(path: string, ignoreReadErrors = true): Promise<Entry[]
         if (typeof tier === 'string') serviceTier = tier
         continue
       }
-      if (payloadType !== 'token_count') {
+      if (payloadType !== 'token_count' && payloadType !== 'token_usage_record') {
         const usage = findUsage(obj)
         if (!usage) continue
         const m = extractModel(obj)
@@ -244,7 +244,10 @@ async function parseFile(path: string, ignoreReadErrors = true): Promise<Entry[]
         continue
       }
 
-      const info = obj?.payload?.info
+      // New logs can emit both formats for one request; share signature/delta state.
+      const info = payloadType === 'token_usage_record'
+        ? { last_token_usage: obj.payload.usage, total_token_usage: obj.payload.thread_token_usage }
+        : obj?.payload?.info
       const total = normalizeUsage(info?.total_token_usage)
       const last = normalizeUsage(info?.last_token_usage)
       const tsValue = obj.timestamp ?? obj?.payload?.timestamp
