@@ -248,9 +248,13 @@ async function parseFile(path: string, ignoreReadErrors = true): Promise<Entry[]
       // New logs can emit both formats for one request; share signature/delta state.
       const info = obj?.payload?.info
       const total = recordTotal ?? normalizeUsage(info?.total_token_usage)
-      const last = normalizeUsage(recordTotal ? obj.payload.usage : info?.last_token_usage)
+      const last = recordTotal ? findUsage(obj) : normalizeUsage(info?.last_token_usage)
       const ts = findTimestamp(obj)
       if (ts === null) continue
+      if (recordTotal) {
+        const m = extractModel(obj)
+        if (typeof m === 'string' && m.trim()) model = m
+      }
 
       const sig = eventSig(last, total)
       if (sig === prevSig

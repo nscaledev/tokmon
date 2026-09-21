@@ -191,3 +191,39 @@ for (const field of ['invalid', 'created_at', 'createdAt', 'time']) {
     }
   })
 }
+
+for (const scenario of ['usage alias', 'duplicate model metadata']) {
+  test(`Codex structured records preserve ${scenario}`, async t => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'tokmon-codex-fields-'))
+    t.after(() => rm(homeDir, { recursive: true, force: true }))
+    const sessions = join(homeDir, '.codex', 'sessions')
+    await mkdir(sessions, { recursive: true })
+    const sessionId = 'field-usage-fixture'
+    const usage = { input_tokens: 17, cached_input_tokens: 5, output_tokens: 3, total_tokens: 20 }
+    const rows = [
+      { type: 'session_meta', payload: { id: sessionId } },
+      ...(scenario === 'usage alias' ? [
+        { timestamp: '2026-01-02T00:00:00Z', type: 'token_usage_record', usage,
+          payload: { thread_token_usage: { input_tokens: 102, cached_input_tokens: 30, output_tokens: 18, total_tokens: 120 } } },
+      ] : [
+        { timestamp: '2026-01-02T00:00:00Z', type: 'event_msg', payload: { type: 'token_count', info: {
+          last_token_usage: usage, total_token_usage: usage,
+        } } },
+        { timestamp: '2026-01-02T00:00:00.400Z', type: 'token_usage_record',
+          payload: { usage, thread_token_usage: usage, model: 'gpt-5.6-terra' } },
+        { timestamp: '2026-01-02T00:00:01Z', type: 'event_msg', payload: { type: 'token_count', info: {
+          last_token_usage: usage,
+          total_token_usage: { input_tokens: 34, cached_input_tokens: 10, output_tokens: 6, total_tokens: 40 },
+        } } },
+      ]),
+    ]
+    await writeFile(join(sessions, `${sessionId}.jsonl`), rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+    for (const table of [await codexTable('UTC', homeDir), await codexSessionTable('UTC', sessionId, homeDir)]) {
+      assert.ok(table)
+      const row = table.daily[0]
+      assert.equal(row.total, scenario === 'usage alias' ? 20 : 40)
+      assert.deepEqual(Object.fromEntries(row.breakdown.map(model => [model.name, model.count])),
+        scenario === 'usage alias' ? { 'gpt-5': 1 } : { 'gpt-5': 1, 'gpt-5.6-terra': 1 })
+    }
+  })
+}
