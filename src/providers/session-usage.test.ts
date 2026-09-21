@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import fs from 'node:fs'
+import fsPromises from 'node:fs/promises'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -139,3 +142,83 @@ test('daemon session cache never falls back to account or other-session totals',
   assert.match(failed.accounts[0].tableError!, /identity/)
   assert.equal(failed.accounts[0].table?.daily[0].total, 153)
 })
+
+for (const providerId of ['claude', 'codex'] as const) {
+  test(`${providerId} session filesystem failures preserve cached totals and aggregate tolerance`, async t => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'tokmon-session-fault-'))
+    t.after(() => rm(homeDir, { recursive: true, force: true }))
+    const root = join(homeDir, `.${providerId}`, providerId === 'claude' ? 'projects' : 'sessions')
+    const directory = join(root, 'project')
+    const path = join(directory, `${target}.jsonl`)
+    await mkdir(directory, { recursive: true })
+    const rows = providerId === 'claude' ? [claude(target, 5)] : [
+      { type: 'session_meta', payload: { id: target } },
+      { timestamp, type: 'event_msg', payload: { type: 'token_count', info: {
+        last_token_usage: { input_tokens: 100, cached_input_tokens: 31, output_tokens: 13 },
+      } } },
+    ]
+    await writeFile(path, rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+    const account = { id: 'work', providerId, name: 'Work', color: 'cyan', homeDir }
+    const engine = createDataEngine({ version: 'test', config: { ...DEFAULTS }, tz: 'UTC',
+      summaryIntervalMs: 8000, billingIntervalMs: 300000,
+      resolved: [{ account, hasUsage: true, hasBilling: false, color: 'cyan' }],
+    })
+    t.after(() => engine.stop())
+    const request = { sessionId: target, provider: providerId, cached: false, refresh: false }
+    const first = await engine.sessionUsage(request)
+    const total = providerId === 'claude' ? 53 : 113
+    assert.equal(first.accounts[0].table?.daily[0].total, total, 'absent optional roots are harmless')
+    const faults = [
+      ['root', 'EACCES'], ['directory', 'EACCES'], ['directory', 'ENOENT'],
+      ['stat', 'EACCES'], ['stat', 'ENOENT'], ['parse', 'EACCES'], ['parse', 'ENOENT'],
+      ...(providerId === 'codex' ? [['prefix', 'EACCES'], ['prefix', 'ENOENT']] : []),
+    ]
+    for (const [boundary, code] of faults) {
+      await t.test(`${boundary} ${code}`, async t => {
+        const before = await engine.sessionUsage(request)
+        assert.equal(before.accounts[0].table?.daily[0].total, total)
+        const error = Object.assign(new Error(`${code}: injected ${boundary} failure`), { code })
+        const readdir = fsPromises.readdir
+        const stat = fsPromises.stat
+        const open = fsPromises.open
+        const createReadStream = fs.createReadStream
+        let reads = 0
+        t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports() })
+        if (boundary === 'root' || boundary === 'directory') {
+          t.mock.method(fsPromises, 'readdir', async (...args: Parameters<typeof readdir>) => {
+            if (args[0] === (boundary === 'root' ? root : directory)) throw error
+            return readdir(...args)
+          })
+        } else if (boundary === 'stat') {
+          t.mock.method(fsPromises, 'stat', async (...args: Parameters<typeof stat>) => {
+            if (args[0] === path) throw error
+            return stat(...args)
+          })
+        } else if (boundary === 'prefix') {
+          t.mock.method(fsPromises, 'open', async (...args: Parameters<typeof open>) => {
+            if (args[0] === path) throw error
+            return open(...args)
+          })
+        } else {
+          t.mock.method(fs, 'createReadStream', (...args: Parameters<typeof createReadStream>) => {
+            const stream = createReadStream(...args)
+            // The identity read succeeds; the later usage parse loses the file.
+            if (args[0] === path && ++reads >= 2) queueMicrotask(() => stream.destroy(error))
+            return stream
+          })
+        }
+        syncBuiltinESMExports()
+        const failed = await engine.sessionUsage(request)
+        assert.equal(failed.accounts[0]?.tableState, 'error')
+        assert.match(failed.accounts[0].tableError!, new RegExp(code))
+        assert.equal(failed.accounts[0].table?.daily[0].total, total)
+        assert.equal(failed.generatedAt, before.generatedAt)
+        if (boundary === 'parse') assert.equal(reads, 2)
+        const cached = await engine.sessionUsage({ ...request, cached: true })
+        assert.equal(cached.accounts[0].table?.daily[0].total, total)
+        assert.equal(cached.generatedAt, before.generatedAt)
+        await assert.doesNotReject(PROVIDERS[providerId].fetchTable!(account, 'UTC'))
+      })
+    }
+  })
+}

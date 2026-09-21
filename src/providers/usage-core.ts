@@ -165,7 +165,7 @@ export async function flushDisk(): Promise<void> {
   await Promise.all([...stores.values()].map(store => store.flush()))
 }
 
-export async function walkFiles(root: string): Promise<string[]> {
+export async function walkFiles(root: string, options?: { ignoreReadErrors?: boolean }): Promise<string[]> {
   const files: string[] = []
   const stack = ['']
   while (stack.length > 0) {
@@ -174,7 +174,9 @@ export async function walkFiles(root: string): Promise<string[]> {
     let entries: Dirent<string>[]
     try {
       entries = await readdir(dir, { withFileTypes: true })
-    } catch {
+    } catch (error) {
+      // Optional roots may not exist; a lost subtree is an incomplete read.
+      if (options?.ignoreReadErrors === false && (rel || (error as NodeJS.ErrnoException).code !== 'ENOENT')) throw error
       continue
     }
     for (const entry of entries) {
@@ -223,12 +225,13 @@ export async function collectSessionFiles(
   roots: readonly string[],
   predicate: (path: string) => boolean,
   since: number,
+  options?: { ignoreReadErrors?: boolean },
 ): Promise<{ path: string; mtimeMs: number; size: number }[]> {
   const files: { path: string; mtimeMs: number; size: number }[] = []
   const seen = new Set<string>()
   const seenIno = new Set<string>()
   for (const root of roots) {
-    for (const relativePath of await walkFiles(root)) {
+    for (const relativePath of await walkFiles(root, options)) {
       if (!predicate(relativePath)) continue
       const path = join(root, relativePath)
       if (seen.has(path)) continue
@@ -242,7 +245,9 @@ export async function collectSessionFiles(
           seenIno.add(inode)
         }
         files.push({ path, mtimeMs: stat.mtimeMs, size: stat.size })
-      } catch {}
+      } catch (error) {
+        if (options?.ignoreReadErrors === false) throw error
+      }
     }
   }
   return files

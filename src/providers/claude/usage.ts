@@ -125,7 +125,7 @@ function shortModel(model: string): string {
 
 async function parseFile(path: string, sessionId?: string): Promise<Entry[]> {
   const entries: Entry[] = []
-  for await (const obj of readJsonLines(path, line => line.includes('"usage"'))) {
+  for await (const obj of readJsonLines(path, line => line.includes('"usage"'), { ignoreReadErrors: sessionId === undefined })) {
     try {
       if (obj.type !== 'assistant' || !obj.message?.usage) continue
       if (sessionId !== undefined && obj.sessionId !== sessionId) continue

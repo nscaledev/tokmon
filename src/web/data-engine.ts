@@ -165,7 +165,7 @@ export function createDataEngine(opts: DataEngineOptions): DataEngine {
   let configEpoch = 0
   type SessionResult = { table: TableData | null; at: number }
   const sessionCache = new Map<string, SessionResult>()
-  const sessionInflight = new Map<string, Promise<SessionResult>>()
+  const sessionInflight = new Map<string, { refresh: boolean; promise: Promise<SessionResult> }>()
 
   let hasClaude = resolved.some(r => r.account.providerId === 'claude')
 
@@ -405,10 +405,12 @@ export function createDataEngine(opts: DataEngineOptions): DataEngine {
           let result = cached
           if (!request.cached) {
             let pending = sessionInflight.get(key)
-            if (!pending) {
+            if (!pending || (request.refresh && !pending.refresh)) {
               const reader = PROVIDERS[account.providerId].fetchSessionTable!
-              pending = withTimeout(reader({ ...account, homeDir: account.homeDir ?? undefined },
-                tz, request.sessionId, request.refresh), FETCH_TIMEOUT_MS).then(table => {
+              const read = async () => {
+                if (stopped || epoch !== configEpoch) throw new Error('Account configuration changed; retry the session query')
+                const table = await reader({ ...account, homeDir: account.homeDir ?? undefined },
+                  tz, request.sessionId, request.refresh)
                 const value = { table, at: Date.now() }
                 if (!stopped && epoch === configEpoch) {
                   sessionCache.delete(key)
@@ -416,12 +418,16 @@ export function createDataEngine(opts: DataEngineOptions): DataEngine {
                   if (sessionCache.size > 128) sessionCache.delete(sessionCache.keys().next().value!)
                 }
                 return value
-              }).finally(() => {
+              }
+              // A force must run after a weaker read, including its cache write.
+              // Keep tracking the reader even if an individual caller times out.
+              const promise = (pending ? pending.promise.catch(() => {}).then(read) : read()).finally(() => {
                 if (sessionInflight.get(key) === pending) sessionInflight.delete(key)
               })
+              pending = { refresh: request.refresh, promise }
               sessionInflight.set(key, pending)
             }
-            result = await pending
+            result = await withTimeout(pending.promise, FETCH_TIMEOUT_MS)
           }
           if (!result) throw new Error('No cached session usage; run without --cached first')
           if (!result.table) return null

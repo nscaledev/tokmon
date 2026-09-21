@@ -178,7 +178,11 @@ export async function runQueryCommand(
 
   const usageCommand = command === 'usage' || command === 'models' || command === 'query'
   const refresh = parsed.refresh ? 'all' : usageCommand && !parsed.cached ? 'table' : null
-  const session = parsed.session ? { sessionId: parsed.session, provider: parsed.provider, account: parsed.account } : undefined
+  const session = parsed.session ? {
+    sessionId: parsed.session,
+    ...(parsed.provider === undefined ? {} : { provider: parsed.provider }),
+    ...(parsed.account === undefined ? {} : { account: parsed.account }),
+  } : undefined
   const snapshot = await (dependencies.fetchSnapshot ?? fetchDaemonSnapshot)(parsed.timeoutMs, refresh, session)
 
   if (command === 'snapshot') return json(snapshot, parsed.compact)

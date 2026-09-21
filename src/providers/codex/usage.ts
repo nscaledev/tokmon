@@ -148,7 +148,7 @@ function timestampSecond(value: unknown): string | null {
   return ts === null ? null : new Date(ts).toISOString().slice(0, 19)
 }
 
-async function hasForkedHistory(path: string): Promise<boolean> {
+async function hasForkedHistory(path: string, ignoreReadErrors: boolean): Promise<boolean> {
   let handle: Awaited<ReturnType<typeof openFile>> | null = null
   try {
     handle = await openFile(path, 'r')
@@ -156,7 +156,8 @@ async function hasForkedHistory(path: string): Promise<boolean> {
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
     const prefix = buffer.subarray(0, bytesRead).toString('utf8')
     return prefix.includes('thread_spawn') && /"forked_from_id"\s*:\s*"[^"]+"/.test(prefix)
-  } catch {
+  } catch (error) {
+    if (!ignoreReadErrors) throw error
     return false
   } finally {
     await handle?.close().catch(() => {})
@@ -184,13 +185,13 @@ function findTimestamp(obj: any): number | null {
   return timestampMs(obj?.timestamp ?? obj?.payload?.timestamp ?? obj?.created_at ?? obj?.createdAt ?? obj?.time)
 }
 
-async function parseFile(path: string): Promise<Entry[]> {
+async function parseFile(path: string, ignoreReadErrors = true): Promise<Entry[]> {
   const entries: Entry[] = []
   let model = 'gpt-5'
   let serviceTier: string | undefined
   let prevTotal: CodexDelta | null = null
   let prevSig: string | null = null
-  let skipReplay = await hasForkedHistory(path)
+  let skipReplay = await hasForkedHistory(path, ignoreReadErrors)
   const relevantLine = (line: string) =>
     line.includes('token_count')
     || line.includes('task_started')
@@ -199,7 +200,7 @@ async function parseFile(path: string): Promise<Entry[]> {
     || line.includes('"usage"')
     || line.includes('input_tokens')
     || line.includes('prompt_tokens')
-  for await (const obj of readJsonLines(path, relevantLine)) {
+  for await (const obj of readJsonLines(path, relevantLine, { ignoreReadErrors })) {
     try {
       const payloadType = obj?.payload?.type ?? obj?.type
       if (skipReplay) {
@@ -308,5 +309,5 @@ export async function codexSessionTable(tz: string, sessionId: string, homeDir?:
   const roots = codexHomes(homeDir).flatMap(home => [join(home, 'sessions'), join(home, 'archived_sessions')])
   const files = await sessionFiles(roots, 'codex', sessionId)
   if (files.length === 0) return null
-  return tabulate(dedupe((await Promise.all(files.map(path => parseFile(path)))).flat()), tz)
+  return tabulate(dedupe((await Promise.all(files.map(path => parseFile(path, false)))).flat()), tz)
 }

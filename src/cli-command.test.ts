@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { Schema } from 'effect'
 import { CONFIG_HELP, runConfigCommand } from './cli-config-command'
 import { parseQueryArgs, queryHelp, runQueryCommand } from './cli-command'
 import { DEFAULTS, PROVIDER_IDS, type Config } from './config'
-import { TOKMON_PROTOCOL_VERSION, type ConfigState, type ConfigUpdateRequest } from './rpc/contract'
+import { SessionUsageRequestSchema, TOKMON_PROTOCOL_VERSION, type ConfigState, type ConfigUpdateRequest } from './rpc/contract'
 import type { WebSnapshot } from './web/contract'
 
 const state = (config: Config): ConfigState => ({
@@ -353,4 +354,25 @@ test('usage command emits a stable JSON envelope through an injected snapshot se
   assert.equal(parsed.tokmonConfig, '/tmp/tokmon-config.json')
   assert.deepEqual(parsed.filters, { provider: null, account: null, model: null })
   assert.deepEqual(parsed.models, [])
+})
+
+test('session command requests encode with absent, individual, and combined optional filters', async () => {
+  for (const filters of [{}, { provider: 'claude' }, { account: 'work' }, { provider: 'claude', account: 'work' }]) {
+    const args = Object.entries(filters).flatMap(([key, value]) => [`--${key}`, value])
+    await runQueryCommand('usage', ['--session', 'session-one', '--json', ...args], {
+      async fetchSnapshot(_timeout, refresh, session) {
+        assert.ok(session)
+        const request = { ...session, cached: refresh === null, refresh: refresh === 'all' }
+        assert.deepEqual(Schema.encodeSync(SessionUsageRequestSchema)(request), {
+          sessionId: 'session-one', ...filters, cached: false, refresh: false,
+        })
+        return {
+          version: 'test', generatedAt: Date.UTC(2026, 6, 10), tz: 'UTC',
+          intervalMs: 8_000, billingIntervalMs: 300_000, providers: [], accounts: [],
+          seeded: false, peak: null, sessionId: 'session-one',
+        }
+      },
+      configPath: () => '/tmp/tokmon-config.json',
+    })
+  }
 })
