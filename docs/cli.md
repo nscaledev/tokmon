@@ -45,8 +45,8 @@ Claude and Codex read matching local transcripts. Cursor requires a logged-in
 account and its usage API: only the last 90 days are available, and events may
 arrive late. Local Cursor spend estimates are not used for session queries.
 `input`, `output`, `cacheRead`, and `cacheCreate` are separate token counts;
-Codex cached input is removed from `input` to avoid counting it twice. A zero
-cache-create count for Codex means its transcript does not report that field.
+Codex cached input is removed from `input` to avoid counting it twice. Tokmon
+currently exposes Codex cache reads; its cache-create count remains zero.
 
 The first query discovers the matching transcript or fetches Cursor events.
 Later queries reread that transcript; Cursor events may be cached for 60 seconds.
