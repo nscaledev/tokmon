@@ -82,6 +82,29 @@ test('session filters compose with existing query switches and aliases', () => {
   assert.throws(() => parseQueryArgs(['--session', '  ']), /session/)
 })
 
+test('session queries default to all history while explicit periods and account defaults stay unchanged', () => {
+  assert.equal(parseQueryArgs([]).period, 'month')
+  assert.equal(parseQueryArgs(['--session', 'session-one']).period, 'all')
+  assert.equal(parseQueryArgs(['-s', 'session-one']).period, 'all')
+  for (const args of [
+    ['--period', 'month', '--session', 'session-one'],
+    ['--session=session-one', '--period=month'],
+    ['-s', 'session-one', '--period', 'week'],
+  ]) assert.equal(parseQueryArgs(args).period, args.includes('week') ? 'week' : 'month')
+})
+
+test('CLI and RPC accept the same bounded session IDs and reject path-like values', () => {
+  const decode = Schema.decodeUnknownSync(SessionUsageRequestSchema)
+  for (const sessionId of ['abc_123.v2-xyz', '11111111-1111-4111-8111-111111111111', 'a'.repeat(200)]) {
+    assert.equal(parseQueryArgs(['--session', sessionId]).session, sessionId)
+    assert.equal(decode({ sessionId, cached: false, refresh: false }).sessionId, sessionId)
+  }
+  for (const sessionId of ['', '.', '..', '../id', 'a/b', 'a\\b', 'a..b', 'a:b', 'a b', 'a\n', 'é', 'a'.repeat(201)]) {
+    assert.throws(() => parseQueryArgs([`--session=${sessionId}`]), /session/, sessionId)
+    assert.throws(() => decode({ sessionId, cached: false, refresh: false }), sessionId)
+  }
+})
+
 test('config path remains daemon-free and backward compatible', async () => {
   let connected = false
   const dependencies = {

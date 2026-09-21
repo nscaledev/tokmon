@@ -356,6 +356,33 @@ test('the engine reports a configuration key that tracks what it applied', () =>
   }
 })
 
+test('colliding session IDs cannot merge providers, including cached results', async t => {
+  const providers = ['claude', 'codex'] as const
+  for (const [index, provider] of providers.entries()) {
+    const reader = PROVIDERS[provider].fetchSessionTable
+    t.after(() => { PROVIDERS[provider].fetchSessionTable = reader })
+    PROVIDERS[provider].fetchSessionTable = async () => tabulate([{
+      ts: Date.UTC(2026, 6, 10), model: 'test', input: index ? 153 : 53, output: 0,
+      cacheRead: 0, cacheCreate: 0, cacheSavings: 0, cost: 1,
+    }], 'UTC')
+  }
+  const engine = createDataEngine({
+    version: 'test', config: { ...DEFAULTS }, ...baseEngineConfig(),
+    resolved: providers.map(providerId => resolvedAccount({ id: providerId, providerId })),
+  })
+  t.after(() => engine.stop())
+  const request = { sessionId: 'same-id', cached: false, refresh: false }
+  await assert.rejects(engine.sessionUsage({ ...request, sessionId: '../id', provider: 'codex' }), /Invalid session ID/)
+  await assert.rejects(engine.sessionUsage(request), /multiple providers.*--provider/)
+  await assert.rejects(engine.sessionUsage({ ...request, cached: true }), /multiple providers.*--provider/)
+  const specific = await engine.sessionUsage({ ...request, provider: 'codex' })
+  assert.deepEqual(specific.accounts.map(account => account.providerId), ['codex'])
+  assert.equal(specific.accounts[0].table?.daily[0].total, 153)
+  PROVIDERS.claude.fetchSessionTable = async () => null
+  const unambiguous = await engine.sessionUsage(request)
+  assert.deepEqual(unambiguous.accounts.map(account => account.providerId), ['codex'])
+})
+
 test('a forced session refresh queues behind a weaker read and coalesces equal-strength callers', async t => {
   const gates = [deferred(), deferred()]
   const tables = [53, 153].map(input => tabulate([{

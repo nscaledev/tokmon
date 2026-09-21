@@ -8,6 +8,8 @@ export async function sessionFiles(roots: string[], provider: 'claude' | 'codex'
     return name === `${sessionId}.jsonl`
       || (provider === 'codex' && name.startsWith('rollout-') && name.endsWith(`-${sessionId}.jsonl`))
   }, 0, { ignoreReadErrors: false })
+  // Intentionally validate embedded identity before the usage pass: a matching
+  // filename alone could attribute another session's usage to this ID.
   for (const { path } of files) {
     let identity: unknown
     for await (const row of readJsonLines(path, undefined, { ignoreReadErrors: false })) {

@@ -31,11 +31,11 @@ Usage:
   tokmon query [options]        Alias for usage
 
 Options:
-      --period <value>          today | week | month | all (default: month)
+      --period <value>          today | week | month | all (default: all with --session, otherwise month)
       --provider <id>           Filter by provider (${PROVIDER_IDS.join(', ')})
       --account <id-or-name>    Filter by account id, name, or email
       --model <substring>       Filter model names
-  -s, --session <id>            Exact Claude/Codex session or Cursor conversation (no children)
+  -s, --session <id>            Exact Claude/Codex session or Cursor conversation only (no children)
       --json                    Stable machine-readable JSON (schemaVersion: 1)
       --compact                 Emit compact JSON instead of pretty JSON
       --cached                  Skip the default local-history refresh
@@ -48,6 +48,7 @@ Examples:
   tokmon usage --period week --provider codex
   tokmon usage --model opus --json
   tokmon usage --period all --json --compact
+  tokmon usage --session SESSION_ID --provider codex --json --compact
 `
 
 const PROVIDERS_HELP = `tokmon providers - Show detected accounts and their local data/config locations

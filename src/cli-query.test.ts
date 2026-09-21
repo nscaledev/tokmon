@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildUsageReport, formatUsageReport } from './cli-query'
+import { parseQueryArgs } from './cli-command-args'
 import type { WebSnapshot } from './web/contract'
 
 const detail = (name: string, cost: number, count: number) => ({
@@ -79,6 +80,16 @@ test('usage report aggregates daily model rows for the requested period', async 
   assert.equal(report.totals.tokens, 540)
   assert.equal(report.sources[0].providerId, 'codex')
   assert.ok(report.sources[0].locations.some(item => item.kind === 'usage'))
+})
+
+test('the default session period includes rows before the current month', async () => {
+  const period = parseQueryArgs(['--session', 'session-one']).period
+  const report = await buildUsageReport({ ...snapshot, sessionId: 'session-one' },
+    { session: 'session-one', period }, Date.UTC(2026, 6, 10, 12))
+  assert.equal(report.period, 'all')
+  assert.equal(report.totals.tokens, 720)
+  assert.equal(report.totals.calls, 10)
+  assert.equal(report.totals.cost, 7)
 })
 
 test('usage filters compose and human output remains agent-readable', async () => {

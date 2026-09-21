@@ -116,7 +116,7 @@ tokmon usage
 tokmon usage --period week --provider codex
 tokmon usage --model opus --json
 tokmon usage --period all --json --compact
-tokmon usage --session SESSION_ID --period all --json --compact
+tokmon usage --session SESSION_ID --provider codex --json --compact
 tokmon providers --json
 tokmon snapshot --refresh
 tokmon config get

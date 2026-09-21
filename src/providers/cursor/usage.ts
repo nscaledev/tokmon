@@ -19,9 +19,10 @@ interface UsageEvent { timestamp?: string; model?: string; kind?: string; conver
 interface EventsResponse { totalUsageEventsCount?: number; usageEventsDisplay?: UsageEvent[] }
 
 type CursorEntry = Entry & { conversationId?: string }
-type CacheSlot = { at: number; entries: CursorEntry[]; complete: boolean }
+type ApiResult = { entries: CursorEntry[]; complete: boolean }
+type CacheSlot = ApiResult & { at: number }
 const apiCache = new Map<string, CacheSlot>()
-const apiInflight = new Map<string, Promise<{ entries: CursorEntry[]; complete: boolean }>>()
+const apiInflight = new Map<string, { refresh: boolean; promise: Promise<ApiResult> }>()
 
 async function readToken(homeDir?: string): Promise<string | null> {
   const r = await runSqlite(cursorStateDb(homeDir), "SELECT value FROM ItemTable WHERE key='cursorAuth/accessToken' LIMIT 1;")
@@ -82,15 +83,15 @@ function eventToEntry(e: UsageEvent): CursorEntry | null {
   }
 }
 
-async function fetchApiEntries(homeDir?: string, refresh = false): Promise<{ entries: CursorEntry[]; complete: boolean }> {
+async function fetchApiEntries(homeDir?: string, refresh = false): Promise<ApiResult> {
   const cacheKey = homeDir ?? ''
   const hit = apiCache.get(cacheKey)
   if (!refresh && hit && Date.now() - hit.at < CACHE_TTL_MS) return { entries: hit.entries, complete: hit.complete }
 
   const existing = apiInflight.get(cacheKey)
-  if (existing) return existing
+  if (existing && (!refresh || existing.refresh)) return existing.promise
 
-  const promise = (async () => {
+  const read = async (): Promise<ApiResult> => {
     const token = await readToken(homeDir)
     if (!token) return { entries: [] as CursorEntry[], complete: false }
 
@@ -120,13 +121,17 @@ async function fetchApiEntries(homeDir?: string, refresh = false): Promise<{ ent
     // Only cache complete fetches so a blip can't suppress local composer rows for 60s.
     if (complete) apiCache.set(cacheKey, { at: Date.now(), entries, complete: true })
     return { entries, complete }
-  })()
+  }
 
-  apiInflight.set(cacheKey, promise)
+  // Serialize a force after a weaker read, including its cache write. Different
+  // conversations share this account pull, so equal-strength callers coalesce.
+  const promise = existing ? existing.promise.catch(() => {}).then(read) : read()
+  const pending = { refresh, promise }
+  apiInflight.set(cacheKey, pending)
   try {
     return await promise
   } finally {
-    apiInflight.delete(cacheKey)
+    if (apiInflight.get(cacheKey) === pending) apiInflight.delete(cacheKey)
   }
 }
 

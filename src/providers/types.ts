@@ -5,6 +5,9 @@ export const PROVIDER_IDS = ['claude', 'codex', 'cursor', 'copilot', 'pi', 'open
 
 export type ProviderId = typeof PROVIDER_IDS[number]
 
+// Absolute end assertion also rejects a trailing newline (unlike JavaScript's $).
+export const SESSION_ID_PATTERN = /^(?!.*\.\.)[A-Za-z0-9][A-Za-z0-9._-]{0,199}(?![\s\S])/
+
 export function matchesAccount(account: { id: string; name: string; email?: string | null }, search?: string): boolean {
   if (!search) return true
   const needle = search.toLowerCase()

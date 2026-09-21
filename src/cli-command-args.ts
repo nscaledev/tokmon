@@ -1,5 +1,5 @@
 import { USAGE_PERIODS, type UsagePeriod } from './cli-query'
-import { PROVIDER_IDS, type ProviderId } from './providers/types'
+import { PROVIDER_IDS, SESSION_ID_PATTERN, type ProviderId } from './providers/types'
 
 export interface ParsedQueryArgs {
   help: boolean
@@ -23,6 +23,7 @@ function valueAfter(args: string[], index: number, name: string): [string, numbe
 }
 
 export function parseQueryArgs(args: string[]): ParsedQueryArgs {
+  let periodSpecified = false
   const parsed: ParsedQueryArgs = {
     help: false,
     json: false,
@@ -46,12 +47,14 @@ export function parseQueryArgs(args: string[]): ParsedQueryArgs {
         throw new Error(`--period must be one of: ${USAGE_PERIODS.join(', ')}`)
       }
       parsed.period = value as UsagePeriod
+      periodSpecified = true
     } else if (arg.startsWith('--period=')) {
       const value = arg.slice('--period='.length)
       if (!USAGE_PERIODS.includes(value as UsagePeriod)) {
         throw new Error(`--period must be one of: ${USAGE_PERIODS.join(', ')}`)
       }
       parsed.period = value as UsagePeriod
+      periodSpecified = true
     } else if (arg === '--provider') {
       const [value, next] = valueAfter(args, index, '--provider'); index = next
       if (!PROVIDER_IDS.includes(value as ProviderId)) throw new Error(`unknown provider: ${value}`)
@@ -90,9 +93,10 @@ export function parseQueryArgs(args: string[]): ParsedQueryArgs {
     else parsed.positionals.push(arg)
   }
   if (parsed.compact) parsed.json = true
-  if (parsed.session !== undefined && !/^\S{1,200}$/.test(parsed.session)) {
-    throw new Error('--session requires an ID of 1–200 non-whitespace characters')
+  if (parsed.session !== undefined && !SESSION_ID_PATTERN.test(parsed.session)) {
+    throw new Error('--session requires 1–200 ASCII letters, digits, dots, underscores or hyphens; start with a letter/digit and do not use ".."')
   }
+  if (parsed.session && !periodSpecified) parsed.period = 'all'
   if (parsed.refresh && parsed.cached) throw new Error('--refresh and --cached cannot be used together')
   return parsed
 }

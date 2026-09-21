@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { type TestContext } from 'node:test'
 import fs from 'node:fs'
 import fsPromises from 'node:fs/promises'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -66,7 +66,7 @@ test('Codex session totals keep cached input as a subset and reject the wrong id
   await assert.rejects(PROVIDERS.codex.fetchSessionTable(account, 'UTC', target), /identity/)
 })
 
-test('Cursor conversation queries preserve cache writes, refresh, and fail closed', async t => {
+async function cursorAccount(t: TestContext) {
   const homeDir = await mkdtemp(join(tmpdir(), 'tokmon-session-'))
   t.after(() => rm(homeDir, { recursive: true, force: true }))
   const path = cursorStateDb(homeDir)
@@ -80,6 +80,11 @@ test('Cursor conversation queries preserve cache writes, refresh, and fail close
   } else {
     execFileSync('sqlite3', [path, sql])
   }
+  return { id: 'work', providerId: 'cursor' as const, name: 'Work', color: 'cyan', homeDir }
+}
+
+test('Cursor conversation queries preserve cache writes, refresh, and fail closed', async t => {
+  const account = await cursorAccount(t)
   const event = (conversationId: string, inputTokens: number) => ({
     timestamp, conversationId, model: 'grok-4.7', chargedCents: 12,
     tokenUsage: { inputTokens, outputTokens: 7, cacheReadTokens: 30, cacheWriteTokens: 11 },
@@ -89,7 +94,6 @@ test('Cursor conversation queries preserve cache writes, refresh, and fail close
   }] }
   let requests = 0
   t.mock.method(globalThis, 'fetch', async () => { requests++; return Response.json(body) })
-  const account = { id: 'work', providerId: 'cursor' as const, name: 'Work', color: 'cyan', homeDir }
   const read = PROVIDERS.cursor.fetchSessionTable!
   const first = await read(account, 'UTC', target)
   assert.equal(first?.daily[0].total, 70)
@@ -104,8 +108,68 @@ test('Cursor conversation queries preserve cache writes, refresh, and fail close
   assert.equal(requests, 2)
   body = { error: 'unavailable' }
   await assert.rejects(read(account, 'UTC', target, true), /unavailable or incomplete/)
-  await assert.rejects(read({ ...account, homeDir: join(homeDir, 'no-login') }, 'UTC', target), /unavailable or incomplete/)
+  await assert.rejects(read({ ...account, homeDir: join(account.homeDir, 'no-login') }, 'UTC', target), /unavailable or incomplete/)
 })
+
+// One-event production excerpt captured 2026-09-21 from GetFilteredUsageEvents.
+// IDs, model, timestamp, counts and money replaced; unrelated metadata removed.
+// Field names and wire types (notably the millisecond timestamp string) retained.
+const cursorFixture = () => fsPromises.readFile(new URL('./cursor/fixtures/usage-events.sanitized.json', import.meta.url), 'utf8')
+  .then(text => JSON.parse(text))
+
+test('captured Cursor wire shape preserves account and session cache-write totals', async t => {
+  const account = await cursorAccount(t)
+  const body = await cursorFixture()
+  t.mock.method(globalThis, 'fetch', async () => Response.json(body))
+  const whole = await PROVIDERS.cursor.fetchTable!(account, 'UTC')
+  const session = await PROVIDERS.cursor.fetchSessionTable!(account, 'UTC', target)
+  for (const table of [whole, session]) {
+    assert.equal(table?.daily[0].total, 53)
+    assert.equal(table?.daily[0].cacheCreate, 11)
+    assert.equal(table?.daily[0].cacheRead, 30)
+    assert.equal(table?.daily[0].cost, 0.12)
+    assert.equal(table?.daily[0].count, 1)
+  }
+})
+
+for (const firstSucceeds of [true, false]) {
+  test(`Cursor force queues behind an ordinary account fetch (${firstSucceeds ? 'success' : 'failure'})`, async t => {
+    const account = await cursorAccount(t)
+    const body = await cursorFixture()
+    let release!: () => void
+    let started!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const firstStarted = new Promise<void>(resolve => { started = resolve })
+    t.after(() => release())
+    let requests = 0
+    t.mock.method(globalThis, 'fetch', async () => {
+      const number = ++requests
+      if (number === 1) {
+        started()
+        await gate
+        if (!firstSucceeds) return new Response(null, { status: 503 })
+      }
+      const event = body.usageEventsDisplay[0]
+      return Response.json({ usageEventsDisplay: [
+        { ...event, tokenUsage: { ...event.tokenUsage, inputTokens: number === 1 ? 5 : 105 } },
+        { ...event, conversationId: other, tokenUsage: { ...event.tokenUsage, inputTokens: number === 1 ? 17 : 117 } },
+      ] })
+    })
+    const ordinary = PROVIDERS.cursor.fetchTable!(account, 'UTC')
+    await firstStarted
+    const read = PROVIDERS.cursor.fetchSessionTable!
+    const forced = read(account, 'UTC', target, true)
+    const otherForced = read(account, 'UTC', other, true)
+    assert.equal(requests, 1, 'forced requests must queue, not race the ordinary cache write')
+    release()
+    const [, fresh, otherFresh] = await Promise.all([ordinary, forced, otherForced])
+    assert.equal(fresh?.daily[0].total, 153)
+    assert.equal(otherFresh?.daily[0].total, 165)
+    assert.equal(requests, 2, 'forced requests for different sessions share one fresh account pull')
+    assert.equal((await read(account, 'UTC', target))?.daily[0].total, 153)
+    assert.equal(requests, 2, 'the cached API result must be the newer forced result')
+  })
+}
 
 test('daemon session cache never falls back to account or other-session totals', async t => {
   const homeDir = await mkdtemp(join(tmpdir(), 'tokmon-session-'))

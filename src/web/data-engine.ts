@@ -15,7 +15,7 @@ import { MIN_STALE_AFTER_MS } from '../usage-semantics'
 import { createRefreshQueue, settleRefreshTasks, type RefreshQueue } from './refresh-queue'
 import { decodeWebSnapshot } from './snapshot-schema'
 import { PROVIDERS } from '../providers'
-import { matchesAccount } from '../providers/types'
+import { matchesAccount, SESSION_ID_PATTERN } from '../providers/types'
 import type { SessionUsageRequest } from '../rpc/contract'
 
 const TABLE_INTERVAL_MS = 300_000
@@ -387,6 +387,7 @@ export function createDataEngine(opts: DataEngineOptions): DataEngine {
 
     async sessionUsage(request) {
       if (stopped) throw new Error('Data engine stopped')
+      if (!SESSION_ID_PATTERN.test(request.sessionId)) throw new Error('Invalid session ID')
       if (request.cached && request.refresh) throw new Error('Cannot refresh a cached-only session query')
       if (request.provider && !PROVIDERS[request.provider].fetchSessionTable) {
         throw new Error(`Session queries are not supported for ${request.provider}`)
@@ -442,6 +443,10 @@ export function createDataEngine(opts: DataEngineOptions): DataEngine {
       }))
       if (stopped || epoch !== configEpoch) throw new Error('Account configuration changed; retry the session query')
       const selected = accounts.filter(account => account !== null)
+      if (!request.provider && new Set(selected.filter(account => account.table?.daily.length)
+        .map(account => account.providerId)).size > 1) {
+        throw new Error('Session ID matches multiple providers; specify --provider')
+      }
       const timestamps = selected.flatMap(account => account.tableUpdatedAt === null ? [] : [account.tableUpdatedAt])
       return { ...snapshot, sessionId: request.sessionId, accounts: selected,
         generatedAt: timestamps.length ? Math.min(...timestamps) : Date.now() }

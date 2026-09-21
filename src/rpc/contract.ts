@@ -1,7 +1,7 @@
 import { Schema } from 'effect'
 import * as Rpc from 'effect/unstable/rpc/Rpc'
 import * as RpcGroup from 'effect/unstable/rpc/RpcGroup'
-import { PROVIDER_IDS } from '../providers/types'
+import { PROVIDER_IDS, SESSION_ID_PATTERN } from '../providers/types'
 import { DESKTOP_GRAPH_RANGES, type Config } from '../config-schema'
 import { BUILT_IN_THEME_PRESET_IDS, THEME_PRESET_IDS } from '../theme'
 
@@ -40,7 +40,7 @@ export type RefreshScope = typeof RefreshScopeSchema.Type
 
 const ProviderIdSchema = Schema.Literals(PROVIDER_IDS)
 export const SessionUsageRequestSchema = Schema.Struct({
-  sessionId: Schema.String.check(Schema.isPattern(/^\S{1,200}$/)),
+  sessionId: Schema.String.check(Schema.isPattern(SESSION_ID_PATTERN)),
   provider: Schema.optionalKey(ProviderIdSchema),
   account: Schema.optionalKey(Schema.String),
   cached: Schema.Boolean,
