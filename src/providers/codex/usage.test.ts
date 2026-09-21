@@ -83,7 +83,7 @@ test('Codex spawned sessions exclude replayed history that crosses a timestamp s
   assert.equal(table.daily[0].count, 1)
 })
 
-for (const format of ['record-first', 'count-first', 'records-only']) {
+for (const format of ['record-first', 'count-first', 'records-only', 'record-first-total-only', 'count-first-total-only']) {
   test(`Codex ${format} usage records share cumulative deduplication with token counts`, async t => {
     const homeDir = await mkdtemp(join(tmpdir(), 'tokmon-codex-pairs-'))
     t.after(() => rm(homeDir, { recursive: true, force: true }))
@@ -97,7 +97,7 @@ for (const format of ['record-first', 'count-first', 'records-only']) {
       reasoning_output_tokens: reasoning, total_tokens: input + output,
     })
     const kinds = format === 'records-only' ? ['record']
-      : format === 'record-first' ? ['record', 'count'] : ['count', 'record']
+      : format.startsWith('record-first') ? ['record', 'count'] : ['count', 'record']
     const rows = [
       { type: 'session_meta', payload: { id: sessionId } },
       { type: 'turn_context', payload: { model: 'gpt-5.6-terra' } },
@@ -111,7 +111,7 @@ for (const format of ['record-first', 'count-first', 'records-only']) {
           thread_token_usage: usage(17 * n, 5 * n, 3 * n, n),
           turn_token_usage: usage(17, 5, 3),
         } : { type: 'token_count', info: {
-          last_token_usage: usage(17, 5, 3),
+          ...(format.endsWith('total-only') ? {} : { last_token_usage: usage(17, 5, 3) }),
           total_token_usage: usage(17 * n, 5 * n, 3 * n, n),
         } },
       }))),
@@ -121,6 +121,13 @@ for (const format of ['record-first', 'count-first', 'records-only']) {
       } } },
       // Other generic usage records still retain their existing ingestion path.
       { timestamp: timestamp(4000), type: 'response_completed', payload: { usage: usage(11, 4, 1) } },
+      // A counter reset starts a new baseline; the following increment is a delta.
+      { timestamp: timestamp(5000), type: 'event_msg', payload: { type: 'token_count', info: {
+        total_token_usage: usage(5, 2, 2),
+      } } },
+      { timestamp: timestamp(6000), type: 'event_msg', payload: { type: 'token_count', info: {
+        total_token_usage: usage(9, 3, 3),
+      } } },
     ]
     await writeFile(join(sessions, `${sessionId}.jsonl`), rows.map(row => JSON.stringify(row)).join('\n') + '\n')
     for (const table of [await codexTable('UTC', homeDir), await codexSessionTable('UTC', sessionId, homeDir)]) {
@@ -128,7 +135,30 @@ for (const format of ['record-first', 'count-first', 'records-only']) {
       assert.equal(table.daily.length, 1)
       const row = table.daily[0]
       assert.deepEqual({ input: row.input, cached: row.cacheRead, output: row.output, total: row.total, count: row.count },
-        { input: 34, cached: 16, output: 10, total: 60, count: 4 })
+        { input: 40, cached: 19, output: 13, total: 72, count: 6 })
     }
   })
 }
+
+test('Codex structured records without cumulative totals retain distinct requests with equal usage', async t => {
+  const homeDir = await mkdtemp(join(tmpdir(), 'tokmon-codex-independent-'))
+  t.after(() => rm(homeDir, { recursive: true, force: true }))
+  const sessions = join(homeDir, '.codex', 'sessions')
+  await mkdir(sessions, { recursive: true })
+  const sessionId = 'independent-usage-fixture'
+  const rows = [
+    { type: 'session_meta', payload: { id: sessionId } },
+    ...[1, 2].map(n => ({
+      timestamp: new Date(Date.UTC(2026, 0, 2, 0, 0, n)).toISOString(), type: 'token_usage_record',
+      payload: { response_id: `response-${n}`, usage: {
+        input_tokens: 17, cached_input_tokens: 5, output_tokens: 3, total_tokens: 20,
+      } },
+    })),
+  ]
+  await writeFile(join(sessions, `${sessionId}.jsonl`), rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+  for (const table of [await codexTable('UTC', homeDir), await codexSessionTable('UTC', sessionId, homeDir)]) {
+    assert.ok(table)
+    assert.equal(table.daily[0].total, 40)
+    assert.equal(table.daily[0].count, 2)
+  }
+})
