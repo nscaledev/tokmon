@@ -434,8 +434,9 @@ export function createDataEngine(opts: DataEngineOptions): DataEngine {
           return { ...account, dashboard: null, table: result.table, tableState: 'ready' as const,
             tableUpdatedAt: result.at }
         } catch (error) {
-          return { ...account, dashboard: null, table: cached?.table ?? null, tableState: 'error' as const,
-            tableUpdatedAt: cached?.at ?? null,
+          const fallback = sessionCache.get(key) ?? cached
+          return { ...account, dashboard: null, table: fallback?.table ?? null, tableState: 'error' as const,
+            tableUpdatedAt: fallback?.at ?? null,
             tableError: error instanceof Error ? error.message : 'Session usage unavailable' }
         }
       }))
