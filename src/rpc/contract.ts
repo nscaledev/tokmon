@@ -14,13 +14,15 @@ export const TOKMON_WS_PATH = '/ws'
 // v6: quotaSource null is an explicit account-field deletion marker. Older
 // daemons cannot decode it, so a newer client must replace them before editing.
 export const TOKMON_PROTOCOL_VERSION = 6
-export const TOKMON_CAPABILITIES = ['config-cas', 'config-revision', 'allowed-hosts', 'tray-config', 'usage-activity', 'tray-pins', 'provider-pins', 'desktop-disclosure', 'desktop-graph-range', 'provider-headroom', 'canonical-identity', 'appearance-v1', 'theme-engine', 'account-detection-v1', 'account-provenance-v1', 'installed-harnesses-v1', 'discovery-refresh-v1', 'menu-bar-today-tokens', 'menu-bar-builder-v1', 'typed-read-failures-v1', 'snapshot-deltas-v1', 'custom-quota-source-v1'] as const
+export const TOKMON_CAPABILITIES = ['config-cas', 'config-revision', 'allowed-hosts', 'tray-config', 'usage-activity', 'tray-pins', 'provider-pins', 'desktop-disclosure', 'desktop-graph-range', 'provider-headroom', 'canonical-identity', 'appearance-v1', 'theme-engine', 'account-detection-v1', 'account-provenance-v1', 'installed-harnesses-v1', 'discovery-refresh-v1', 'menu-bar-today-tokens', 'menu-bar-builder-v1', 'typed-read-failures-v1', 'snapshot-deltas-v1', 'custom-quota-source-v1', 'session-usage-v1'] as const
 export const TYPED_READ_FAILURES_CAPABILITY = 'typed-read-failures-v1'
+export const SESSION_USAGE_CAPABILITY = 'session-usage-v1'
 
 export const TOKMON_WS_METHODS = {
   getConfig: 'tokmon.getConfig',
   setConfig: 'tokmon.setConfig',
   refresh: 'tokmon.refresh',
+  sessionUsage: 'tokmon.sessionUsage',
   browseFs: 'tokmon.browseFs',
   snapshot: 'tokmon.snapshot',
   config: 'tokmon.config',
@@ -37,6 +39,18 @@ export const RefreshScopeSchema = Schema.Literals([
 export type RefreshScope = typeof RefreshScopeSchema.Type
 
 const ProviderIdSchema = Schema.Literals(PROVIDER_IDS)
+export const SessionUsageRequestSchema = Schema.Struct({
+  sessionId: Schema.String.check(Schema.isPattern(/^\S{1,200}$/)),
+  provider: Schema.optionalKey(ProviderIdSchema),
+  account: Schema.optionalKey(Schema.String),
+  cached: Schema.Boolean,
+  refresh: Schema.Boolean,
+})
+export type SessionUsageRequest = typeof SessionUsageRequestSchema.Type
+
+export class SessionUsageFailure extends Schema.TaggedErrorClass<SessionUsageFailure>()(
+  'SessionUsageFailure', { kind: Schema.Literal('session-usage'), message: Schema.String },
+) {}
 const NonNegativeIntegerSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
 const PositiveFiniteSchema = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(1))
 
@@ -467,6 +481,7 @@ const WebAccountShellFields = {
   summaryState: Schema.Literals(['pending', 'ready', 'error'] as const),
   billingState: Schema.Literals(['pending', 'ready', 'error'] as const),
   tableState: Schema.Literals(['pending', 'ready', 'error'] as const),
+  tableError: Schema.optionalKey(Schema.String),
   summaryUpdatedAt: Schema.optionalKey(Schema.NullOr(NonNegativeIntegerSchema)),
   billingUpdatedAt: Schema.optionalKey(Schema.NullOr(NonNegativeIntegerSchema)),
   tableUpdatedAt: Schema.optionalKey(Schema.NullOr(NonNegativeIntegerSchema)),
@@ -483,6 +498,7 @@ const WebAccountSchema = Schema.Struct({
 
 /** Runtime validation for streamed dashboard state; unknown JSON is never trusted. */
 export const WebSnapshotSchema = Schema.Struct({
+  sessionId: Schema.optionalKey(Schema.String),
   version: Schema.String,
   generatedAt: NonNegativeIntegerSchema,
   tz: Schema.String,
@@ -602,6 +618,12 @@ export const RefreshRpc = Rpc.make(TOKMON_WS_METHODS.refresh, {
   error: RefreshFailure,
 })
 
+export const SessionUsageRpc = Rpc.make(TOKMON_WS_METHODS.sessionUsage, {
+  payload: SessionUsageRequestSchema,
+  success: WebSnapshotSchema,
+  error: SessionUsageFailure,
+})
+
 export const BrowseFsRpc = Rpc.make(TOKMON_WS_METHODS.browseFs, {
   payload: Schema.Struct({ path: Schema.String, ...ReadFailurePayloadFields }),
   success: FsListingSchema,
@@ -624,6 +646,7 @@ export const TokmonRpcGroup = RpcGroup.make(
   GetConfigRpc,
   SetConfigRpc,
   RefreshRpc,
+  SessionUsageRpc,
   BrowseFsRpc,
   SnapshotRpc,
   ConfigRpc,

@@ -16,8 +16,10 @@ import {
   type ConfigUpdateRequest,
   type FsListing,
   type RefreshScope,
+  type SessionUsageRequest,
 } from '../rpc/contract'
 import { createSnapshotDeltaDecoder } from '../web/snapshot-delta'
+import { materializeWebSnapshot } from '../web/snapshot-materialize'
 
 export type RpcConnState = 'connecting' | 'live' | 'reconnecting' | 'error' | 'closed'
 
@@ -36,6 +38,7 @@ export interface DaemonRpcClient {
   getConfig(): Promise<ConfigState>
   setConfig(update: ConfigUpdateRequest): Promise<ConfigState>
   refresh(scope?: RefreshScope): Promise<void>
+  sessionUsage(request: SessionUsageRequest): Promise<WebSnapshot>
   browseFs(path: string): Promise<FsListing>
   subscribeSnapshot(onSnapshot: (snapshot: WebSnapshot) => void): () => void
   subscribeConfig(onConfig: (config: ConfigState) => void): () => void
@@ -604,6 +607,10 @@ export function createDaemonRpcClient(baseUrl: string, options: DaemonRpcClientO
 
     refresh: (scope = 'all') =>
       run(TOKMON_WS_METHODS.refresh, client => client[TOKMON_WS_METHODS.refresh]({ scope })),
+
+    sessionUsage: request =>
+      run(TOKMON_WS_METHODS.sessionUsage, client => client[TOKMON_WS_METHODS.sessionUsage](request))
+        .then(materializeWebSnapshot),
 
     browseFs: (path) =>
       run(TOKMON_WS_METHODS.browseFs, client => client[TOKMON_WS_METHODS.browseFs]({

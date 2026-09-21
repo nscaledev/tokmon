@@ -95,3 +95,16 @@ test('usage filters compose and human output remains agent-readable', async () =
   assert.match(text, /gpt-5\.6-luna/)
   assert.match(text, /Sources:/)
 })
+
+test('session reports reject unscoped snapshots and expose scope and source failures', async () => {
+  const filters = { session: 'session-one', period: 'all' as const }
+  await assert.rejects(buildUsageReport(snapshot, filters), /not scoped/)
+  await assert.rejects(buildUsageReport({ ...snapshot, sessionId: 'other' }, filters), /not scoped/)
+  const report = await buildUsageReport({ ...snapshot, sessionId: 'session-one',
+    accounts: snapshot.accounts.map(account => ({ ...account, tableState: 'error', tableError: 'Refresh failed' })),
+  }, filters)
+  assert.equal(report.filters.session, 'session-one')
+  assert.equal(report.errors[0].message, 'Refresh failed')
+  assert.match(formatUsageReport(report), /Session: session-one \(excludes child sessions\)/)
+  assert.match(formatUsageReport(report), /Refresh failed/)
+})

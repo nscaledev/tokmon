@@ -138,6 +138,7 @@ export interface WebAccount {
   summaryState: AccountFetchState
   billingState: AccountFetchState
   tableState: AccountFetchState
+  tableError?: string
   summaryUpdatedAt: number | null
   billingUpdatedAt: number | null
   tableUpdatedAt: number | null
@@ -151,6 +152,8 @@ export interface WebProviderInfo {
 }
 
 export interface WebSnapshot {
+  /** Present only on an explicitly session-scoped query, never on account snapshots. */
+  sessionId?: string
   version: string
   generatedAt: number
   tz: string

@@ -1,6 +1,6 @@
 import { PROVIDER_META } from '../../config-schema'
 import type { Provider } from '../types'
-import { detectClaude, claudeDashboard, claudeTable } from './usage'
+import { detectClaude, claudeDashboard, claudeTable, claudeSessionTable } from './usage'
 import { claudeBilling } from './billing'
 
 export const claudeProvider: Provider = {
@@ -11,5 +11,6 @@ export const claudeProvider: Provider = {
   detect: (homeDir) => detectClaude(homeDir),
   fetchSummary: (account, tz) => claudeDashboard(tz, account.homeDir),
   fetchTable: (account, tz) => claudeTable(tz, account.homeDir),
+  fetchSessionTable: (account, tz, sessionId) => claudeSessionTable(tz, sessionId, account.homeDir),
   fetchBilling: (account) => claudeBilling(account),
 }

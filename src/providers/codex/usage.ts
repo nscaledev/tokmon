@@ -8,6 +8,8 @@ import { readJsonLines } from '../_shared/jsonl'
 import { modelKeyMatches } from '../_shared/metric'
 import { makePriceResolver } from '../_shared/pricing'
 import { timestampMs } from '../_shared/time'
+import { sessionFiles } from '../_shared/session'
+import { dedupe } from '../usage-core'
 
 const PRICING: Record<string, { in: number; cr: number; out: number }> = {
   // Bare 'gpt-5.6' (no tier suffix) appears in real session logs; without an
@@ -300,4 +302,11 @@ export async function codexDashboard(tz: string, homeDir?: string): Promise<Dash
 export async function codexTable(tz: string, homeDir?: string): Promise<TableData> {
   const entries = await loadEntries(tableSince(tz), homeDir)
   return tabulate(entries, tz)
+}
+
+export async function codexSessionTable(tz: string, sessionId: string, homeDir?: string): Promise<TableData | null> {
+  const roots = codexHomes(homeDir).flatMap(home => [join(home, 'sessions'), join(home, 'archived_sessions')])
+  const files = await sessionFiles(roots, 'codex', sessionId)
+  if (files.length === 0) return null
+  return tabulate(dedupe((await Promise.all(files.map(path => parseFile(path)))).flat()), tz)
 }

@@ -12,6 +12,7 @@ export interface ParsedQueryArgs {
   provider?: ProviderId
   account?: string
   model?: string
+  session?: string
   positionals: string[]
 }
 
@@ -65,6 +66,11 @@ export function parseQueryArgs(args: string[]): ParsedQueryArgs {
       parsed.account = arg.slice('--account='.length)
       if (!parsed.account) throw new Error('--account requires a value')
     }
+    else if (arg === '--session' || arg === '-s') {
+      [parsed.session, index] = valueAfter(args, index, arg)
+    } else if (arg.startsWith('--session=')) {
+      parsed.session = arg.slice('--session='.length)
+    }
     else if (arg === '--model') {
       [parsed.model, index] = valueAfter(args, index, '--model')
     } else if (arg.startsWith('--model=')) {
@@ -84,6 +90,9 @@ export function parseQueryArgs(args: string[]): ParsedQueryArgs {
     else parsed.positionals.push(arg)
   }
   if (parsed.compact) parsed.json = true
+  if (parsed.session !== undefined && !/^\S{1,200}$/.test(parsed.session)) {
+    throw new Error('--session requires an ID of 1–200 non-whitespace characters')
+  }
   if (parsed.refresh && parsed.cached) throw new Error('--refresh and --cached cannot be used together')
   return parsed
 }

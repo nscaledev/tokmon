@@ -65,6 +65,22 @@ test('every query command has focused help without starting the daemon', async (
   assert.match(CONFIG_HELP, /menu-bar-pins <ids\|none>\s+Deprecated/)
 })
 
+test('session filters compose with existing query switches and aliases', () => {
+  for (const flag of ['--session', '-s']) {
+    const parsed = parseQueryArgs([flag, 'session-one', '--provider', 'cursor', '--account', 'work',
+      '--model', 'grok', '--period', 'all', '--json', '--compact', '--refresh'])
+    assert.equal(parsed.session, 'session-one')
+    assert.equal(parsed.provider, 'cursor')
+    assert.equal(parsed.account, 'work')
+    assert.equal(parsed.period, 'all')
+    assert.equal(parsed.compact, true)
+    assert.equal(parsed.refresh, true)
+  }
+  assert.equal(parseQueryArgs(['--session=session-one', '--cached']).session, 'session-one')
+  assert.throws(() => parseQueryArgs(['--session=']), /session/)
+  assert.throws(() => parseQueryArgs(['--session', '  ']), /session/)
+})
+
 test('config path remains daemon-free and backward compatible', async () => {
   let connected = false
   const dependencies = {

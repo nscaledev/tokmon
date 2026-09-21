@@ -4,7 +4,7 @@ import { connect } from 'node:net'
 import test from 'node:test'
 import { DEFAULTS } from '../config'
 import { createDaemonRpcClient } from '../client/daemon-rpc-client'
-import { BrowseFsFailure, ConfigReadFailure, RefreshFailure } from '../rpc/contract'
+import { BrowseFsFailure, ConfigReadFailure, RefreshFailure, SessionUsageFailure, SESSION_USAGE_CAPABILITY } from '../rpc/contract'
 import { listenOrSkip } from '../test-helpers'
 import type { DataEngine } from './data-engine'
 import type { WebSnapshot } from './contract'
@@ -51,6 +51,7 @@ function websocketUpgradeStatus(port: number): Promise<number> {
 test('loopback dashboard websocket requires no browser token', async (t) => {
   const engine: DataEngine = {
     snapshot: () => null,
+    sessionUsage: async () => { throw new Error('session usage not configured') },
     start: () => {},
     subscribe: () => () => {},
     subscribeConfig: () => () => {},
@@ -86,6 +87,7 @@ test('client normalizes additive config omissions from older protocol-v3 daemons
   const oldConfig = preTrayConfig as unknown as typeof DEFAULTS
   const engine: DataEngine = {
     snapshot: () => null,
+    sessionUsage: async () => { throw new Error('session usage not configured') },
     start: () => {},
     subscribe: () => () => {},
     subscribeConfig: (onConfig) => {
@@ -142,6 +144,7 @@ test('negotiated config and filesystem failures stay typed and request-local', a
   let browseFailure = false
   const engine: DataEngine = {
     snapshot: () => null,
+    sessionUsage: async () => { throw new Error('session usage not configured') },
     start: () => {},
     subscribe: () => () => {},
     subscribeConfig: () => () => {},
@@ -213,6 +216,7 @@ test('refresh RPC acknowledges only after the data engine pass completes', async
   let defectRefresh = false
   const engine: DataEngine = {
     snapshot: () => null,
+    sessionUsage: async () => { throw new Error('session usage not configured') },
     start: () => {},
     subscribe: () => () => {},
     subscribeConfig: () => () => {},
@@ -294,6 +298,10 @@ test('a stale snapshot stream is restarted instead of remaining falsely live', a
   let configSubscriptions = 0
   const engine: DataEngine = {
     snapshot: () => snapshot,
+    sessionUsage: async request => {
+      if (request.cached) throw new Error('No cached session usage')
+      return { ...snapshot, sessionId: request.sessionId }
+    },
     start: () => {},
     subscribe: (onSnapshot) => {
       subscriptions++
@@ -324,6 +332,14 @@ test('a stale snapshot stream is restarted instead of remaining falsely live', a
       transport: 'node',
       reconnectBaseDelayMs: 5,
       snapshotStaleFloorMs: 30,
+    })
+    assert.ok((await client.getConfig()).protocol.capabilities.includes(SESSION_USAGE_CAPABILITY))
+    const session = { sessionId: 'session-one', cached: false, refresh: true }
+    assert.equal((await client.sessionUsage(session)).sessionId, 'session-one')
+    await assert.rejects(client.sessionUsage({ ...session, cached: true, refresh: false }), error => {
+      assert.ok(error instanceof SessionUsageFailure)
+      assert.match(error.message, /No cached session usage/)
+      return true
     })
     let values = 0
     let configValues = 0

@@ -7,6 +7,8 @@ import { type Entry, summarize, tabulate, loadCachedEntries, safeNum, dashboardS
 import { readJsonLines } from '../_shared/jsonl'
 import { makePriceResolver } from '../_shared/pricing'
 import { timestampMs } from '../_shared/time'
+import { sessionFiles } from '../_shared/session'
+import { dedupe } from '../usage-core'
 
 const PRICING: Record<string, { i: number; o: number; cc: number; cr: number }> = {
   'claude-opus-5': { i: 5e-6, o: 25e-6, cc: 6.25e-6, cr: 5e-7 },
@@ -121,11 +123,12 @@ function shortModel(model: string): string {
   return model.replace('claude-', '').replace(/-\d{8}$/, '')
 }
 
-async function parseFile(path: string): Promise<Entry[]> {
+async function parseFile(path: string, sessionId?: string): Promise<Entry[]> {
   const entries: Entry[] = []
   for await (const obj of readJsonLines(path, line => line.includes('"usage"'))) {
     try {
       if (obj.type !== 'assistant' || !obj.message?.usage) continue
+      if (sessionId !== undefined && obj.sessionId !== sessionId) continue
       const ts = timestampMs(obj.timestamp)
       if (ts === null) continue
       const u = obj.message.usage
@@ -173,4 +176,10 @@ export async function claudeDashboard(tz: string, homeDir?: string): Promise<Das
 export async function claudeTable(tz: string, homeDir?: string): Promise<TableData> {
   const entries = await loadEntries(tableSince(tz), homeDir)
   return tabulate(entries, tz)
+}
+
+export async function claudeSessionTable(tz: string, sessionId: string, homeDir?: string): Promise<TableData | null> {
+  const files = await sessionFiles(getClaudeDirs(homeDir), 'claude', sessionId)
+  if (files.length === 0) return null
+  return tabulate(dedupe((await Promise.all(files.map(path => parseFile(path, sessionId)))).flat()), tz)
 }

@@ -24,6 +24,43 @@ JSON output includes:
 
 Use `tokmon usage --help` for the current period and filter options.
 
+### One session or conversation
+
+Use `--session <id>` (or `-s <id>`) for one Claude Code or Codex session, or
+one Cursor conversation. IDs are exact, not prefixes. Child sessions and other
+conversations are excluded; there is no fallback to account-wide totals.
+
+```bash
+tokmon usage --session SESSION_ID --period all --json --compact
+tokmon usage -s SESSION_ID --provider codex --cached --json --compact
+tokmon usage -s CONVERSATION_ID --provider cursor --refresh --json --compact
+```
+
+Replace the placeholder with the transcript's `sessionId` (Claude),
+`session_meta.payload.id` (Codex), or `conversationId` / composer ID (Cursor).
+Provider, account, model, and period filters still apply. The default period
+is **month**; use `--period all` for all available session history.
+
+Claude and Codex read matching local transcripts. Cursor requires a logged-in
+account and its usage API: only the last 90 days are available, and events may
+arrive late. Local Cursor spend estimates are not used for session queries.
+`input`, `output`, `cacheRead`, and `cacheCreate` are separate token counts;
+Codex cached input is removed from `input` to avoid counting it twice. A zero
+cache-create count for Codex means its transcript does not report that field.
+
+The first query discovers the matching transcript or fetches Cursor events.
+Later queries reread that transcript; Cursor events may be cached for 60 seconds.
+`--refresh` bypasses Cursor's event cache and also refreshes account usage and
+billing. `--cached` reads only the daemon's last result for that exact session:
+run a query without it first. This cache is bounded, in memory, and cleared when
+the daemon restarts or account configuration changes.
+
+JSON keeps `schemaVersion: 1` and adds `filters.session`. An unmatched ID returns
+empty rows and zero totals. Source failures appear in `errors` with a message;
+if available, the last successful session totals are retained. Check `errors`
+before treating a result as current. An older daemon without session support
+must be updated and restarted.
+
 ## Providers
 
 ```bash

@@ -41,6 +41,7 @@ async function waitFor(predicate: () => boolean, label: string, timeoutMs = 3_00
 function stubEngine(overrides: Partial<DataEngine> = {}): DataEngine {
   return {
     snapshot: () => null,
+    sessionUsage: async () => { throw new Error('session usage not configured') },
     start: () => {},
     subscribe: () => () => {},
     subscribeConfig: () => () => {},

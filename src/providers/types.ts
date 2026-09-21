@@ -5,6 +5,14 @@ export const PROVIDER_IDS = ['claude', 'codex', 'cursor', 'copilot', 'pi', 'open
 
 export type ProviderId = typeof PROVIDER_IDS[number]
 
+export function matchesAccount(account: { id: string; name: string; email?: string | null }, search?: string): boolean {
+  if (!search) return true
+  const needle = search.toLowerCase()
+  return account.id.toLowerCase() === needle
+    || account.name.toLowerCase().includes(needle)
+    || (account.email?.toLowerCase().includes(needle) ?? false)
+}
+
 export interface Account {
   id: string
   providerId: ProviderId
@@ -58,5 +66,7 @@ export interface Provider {
   detect(homeDir?: string): Promise<boolean>
   fetchSummary?(account: Account, tz: string): Promise<DashboardData>
   fetchTable?(account: Account, tz: string): Promise<TableData>
+  /** Exact session/conversation only; null means no matching local/API history. */
+  fetchSessionTable?(account: Account, tz: string, sessionId: string, refresh?: boolean): Promise<TableData | null>
   fetchBilling?(account: Account, tz: string): Promise<BillingResult>
 }

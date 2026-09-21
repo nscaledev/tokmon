@@ -12,6 +12,7 @@ import { parseQueryArgs } from './cli-command-args'
 import { configLocation } from './config'
 import { PROVIDER_IDS } from './providers/types'
 import type { WebSnapshot } from './web/contract'
+import { SESSION_USAGE_CAPABILITY, type SessionUsageRequest } from './rpc/contract'
 
 export { parseQueryArgs, type ParsedQueryArgs } from './cli-command-args'
 
@@ -34,6 +35,7 @@ Options:
       --provider <id>           Filter by provider (${PROVIDER_IDS.join(', ')})
       --account <id-or-name>    Filter by account id, name, or email
       --model <substring>       Filter model names
+  -s, --session <id>            Exact Claude/Codex session or Cursor conversation (no children)
       --json                    Stable machine-readable JSON (schemaVersion: 1)
       --compact                 Emit compact JSON instead of pretty JSON
       --cached                  Skip the default local-history refresh
@@ -88,21 +90,37 @@ function isSnapshot(value: unknown): value is WebSnapshot {
 
 const delay = (ms: number) => new Promise<void>(resolve => { setTimeout(resolve, ms) })
 
-export async function fetchDaemonSnapshot(timeoutMs: number, refresh: 'table' | 'all' | null): Promise<WebSnapshot> {
+export async function fetchDaemonSnapshot(
+  timeoutMs: number,
+  refresh: 'table' | 'all' | null,
+  session?: Pick<SessionUsageRequest, 'sessionId' | 'provider' | 'account'>,
+): Promise<WebSnapshot> {
   const handle = await attachOrSpawn({ timeoutMs })
   if (handle.kind !== 'spawned' || !handle.baseUrl) throw new Error(handle.issue?.message ?? 'tokmon daemon is unavailable')
   const deadline = Date.now() + timeoutMs
 
-  if (refresh) {
+  if (refresh || session) {
     const client = createDaemonRpcClient(handle.baseUrl, {
       transport: 'node',
       reconnectAttempts: 2,
       reconnectBaseDelayMs: 100,
+      requestTimeoutMs: timeoutMs,
     })
     try {
       // A provider failure still leaves useful partial data in the snapshot.
       // Query commands report per-source states instead of discarding all data.
-      await withTimeout(client.refresh(refresh), timeoutMs).catch(() => {})
+      if (session) {
+        const state = await client.getConfig()
+        if (!state.protocol.capabilities.includes(SESSION_USAGE_CAPABILITY)) {
+          throw new Error('The running daemon does not support session queries; update/restart Tokmon')
+        }
+      }
+      if (refresh && (!session || refresh === 'all')) {
+        await withTimeout(client.refresh(refresh), timeoutMs).catch(() => {})
+      }
+      if (session) return await withTimeout(client.sessionUsage({ ...session,
+        cached: refresh === null, refresh: refresh === 'all',
+      }), timeoutMs)
     } finally {
       await client.close().catch(() => {})
     }
@@ -153,14 +171,15 @@ export async function runQueryCommand(
   const getConfigPath = dependencies.configPath ?? configLocation
 
   if (command === 'providers' || command === 'snapshot') {
-    const invalid = rejectsOption(args, ['--period', '--provider', '--account', '--model', '--cached', '--no-refresh'])
+    const invalid = rejectsOption(args, ['--period', '--provider', '--account', '--model', '--session', '-s', '--cached', '--no-refresh'])
     if (invalid) throw new Error(`${invalid} is only valid for tokmon usage`)
   }
   if (parsed.positionals.length) throw new Error(`unexpected argument: ${parsed.positionals[0]}`)
 
   const usageCommand = command === 'usage' || command === 'models' || command === 'query'
   const refresh = parsed.refresh ? 'all' : usageCommand && !parsed.cached ? 'table' : null
-  const snapshot = await (dependencies.fetchSnapshot ?? fetchDaemonSnapshot)(parsed.timeoutMs, refresh)
+  const session = parsed.session ? { sessionId: parsed.session, provider: parsed.provider, account: parsed.account } : undefined
+  const snapshot = await (dependencies.fetchSnapshot ?? fetchDaemonSnapshot)(parsed.timeoutMs, refresh, session)
 
   if (command === 'snapshot') return json(snapshot, parsed.compact)
   if (command === 'providers') {
@@ -173,6 +192,7 @@ export async function runQueryCommand(
     provider: parsed.provider,
     account: parsed.account,
     model: parsed.model,
+    session: parsed.session,
   }
   const report = await buildUsageReport(snapshot, filters, Date.now(), getConfigPath())
   return parsed.json ? json(report, parsed.compact) : `${formatUsageReport(report)}\n`
