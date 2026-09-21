@@ -71,8 +71,8 @@ export function parseQueryArgs(args: string[]): ParsedQueryArgs {
     }
     else if (arg === '--session' || arg === '-s') {
       [parsed.session, index] = valueAfter(args, index, arg)
-    } else if (arg.startsWith('--session=')) {
-      parsed.session = arg.slice('--session='.length)
+    } else if (arg.startsWith('--session=') || arg.startsWith('-s=')) {
+      parsed.session = arg.slice(arg.indexOf('=') + 1)
     }
     else if (arg === '--model') {
       [parsed.model, index] = valueAfter(args, index, '--model')

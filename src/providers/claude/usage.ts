@@ -3,12 +3,11 @@ import { join, isAbsolute } from 'node:path'
 import { homedir } from 'node:os'
 import type { DashboardData, TableData } from '../../types'
 import { envDir } from '../../config'
-import { type Entry, summarize, tabulate, loadCachedEntries, safeNum, dashboardSince, tableSince, hasFileMatching, collectSessionFiles } from '../usage-core'
+import { type Entry, summarize, tabulate, dedupe, loadCachedEntries, safeNum, dashboardSince, tableSince, hasFileMatching, collectSessionFiles } from '../usage-core'
 import { readJsonLines } from '../_shared/jsonl'
 import { makePriceResolver } from '../_shared/pricing'
 import { timestampMs } from '../_shared/time'
 import { sessionFiles } from '../_shared/session'
-import { dedupe } from '../usage-core'
 
 const PRICING: Record<string, { i: number; o: number; cc: number; cr: number }> = {
   'claude-opus-5': { i: 5e-6, o: 25e-6, cc: 6.25e-6, cr: 5e-7 },

@@ -3,13 +3,12 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { DashboardData, TableData } from '../../types'
 import { envDir } from '../../config'
-import { type Entry, summarize, tabulate, loadCachedEntries, safeNum, dashboardSince, tableSince, collectSessionFiles } from '../usage-core'
+import { type Entry, summarize, tabulate, dedupe, loadCachedEntries, safeNum, dashboardSince, tableSince, collectSessionFiles } from '../usage-core'
 import { readJsonLines } from '../_shared/jsonl'
 import { modelKeyMatches } from '../_shared/metric'
 import { makePriceResolver } from '../_shared/pricing'
 import { timestampMs } from '../_shared/time'
 import { sessionFiles } from '../_shared/session'
-import { dedupe } from '../usage-core'
 
 const PRICING: Record<string, { in: number; cr: number; out: number }> = {
   // Bare 'gpt-5.6' (no tier suffix) appears in real session logs; without an
@@ -52,6 +51,10 @@ export function codexHomes(homeDir?: string): string[] {
   homes.push(join(homedir(), '.codex'))
   homes.push(join(homedir(), '.config', 'codex'))
   return [...new Set(homes)]
+}
+
+function codexRoots(homeDir?: string): string[] {
+  return codexHomes(homeDir).flatMap(home => [join(home, 'sessions'), join(home, 'archived_sessions')])
 }
 
 export async function detectCodex(homeDir?: string): Promise<boolean> {
@@ -246,6 +249,8 @@ async function parseFile(path: string, ignoreReadErrors = true): Promise<Entry[]
       }
 
       // New logs can emit both formats for one request; share signature/delta state.
+      // Paired thread_token_usage and total_token_usage describe the same cumulative
+      // counter; differing totals are not considered duplicates.
       const info = obj?.payload?.info
       const total = recordTotal ?? normalizeUsage(info?.total_token_usage)
       const last = recordTotal ? findUsage(obj) : normalizeUsage(info?.last_token_usage)
@@ -295,8 +300,7 @@ async function parseFile(path: string, ignoreReadErrors = true): Promise<Entry[]
 }
 
 async function loadEntries(since: number, homeDir?: string): Promise<Entry[]> {
-  const roots = codexHomes(homeDir).flatMap(home => [join(home, 'sessions'), join(home, 'archived_sessions')])
-  const files = await collectSessionFiles(roots, path => path.endsWith('.jsonl'), since)
+  const files = await collectSessionFiles(codexRoots(homeDir), path => path.endsWith('.jsonl'), since)
   return loadCachedEntries(files, parseFile, since)
 }
 
@@ -311,8 +315,7 @@ export async function codexTable(tz: string, homeDir?: string): Promise<TableDat
 }
 
 export async function codexSessionTable(tz: string, sessionId: string, homeDir?: string): Promise<TableData | null> {
-  const roots = codexHomes(homeDir).flatMap(home => [join(home, 'sessions'), join(home, 'archived_sessions')])
-  const files = await sessionFiles(roots, 'codex', sessionId)
+  const files = await sessionFiles(codexRoots(homeDir), 'codex', sessionId)
   if (files.length === 0) return null
   return tabulate(dedupe((await Promise.all(files.map(path => parseFile(path, false)))).flat()), tz)
 }

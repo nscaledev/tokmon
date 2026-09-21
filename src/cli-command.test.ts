@@ -77,8 +77,11 @@ test('session filters compose with existing query switches and aliases', () => {
     assert.equal(parsed.compact, true)
     assert.equal(parsed.refresh, true)
   }
-  assert.equal(parseQueryArgs(['--session=session-one', '--cached']).session, 'session-one')
-  assert.throws(() => parseQueryArgs(['--session=']), /session/)
+  for (const flag of ['--session=', '-s=']) {
+    assert.deepEqual(parseQueryArgs([`${flag}session-one`, '--cached']),
+      parseQueryArgs(['--session', 'session-one', '--cached']))
+    for (const id of ['', '../id']) assert.throws(() => parseQueryArgs([`${flag}${id}`]), /session/)
+  }
   assert.throws(() => parseQueryArgs(['--session', '  ']), /session/)
 })
 

@@ -24,6 +24,8 @@ const IDLE_PAUSE_MS = 60_000
 const SNAPSHOT_CACHE_THROTTLE_MS = 20_000
 const REVEAL_THROTTLE_MS = 500
 const FETCH_TIMEOUT_MS = 30_000
+// Bound daemon memory across sessions; evict the least recently refreshed entry.
+const SESSION_CACHE_MAX_ENTRIES = 128
 
 export function billingNeedsCatchUp(
   accounts: readonly ResolvedAccount[],
@@ -416,7 +418,7 @@ export function createDataEngine(opts: DataEngineOptions): DataEngine {
                 if (!stopped && epoch === configEpoch) {
                   sessionCache.delete(key)
                   sessionCache.set(key, value)
-                  if (sessionCache.size > 128) sessionCache.delete(sessionCache.keys().next().value!)
+                  if (sessionCache.size > SESSION_CACHE_MAX_ENTRIES) sessionCache.delete(sessionCache.keys().next().value!)
                 }
                 return value
               }
