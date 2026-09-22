@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { Schema } from 'effect'
 import { CONFIG_HELP, runConfigCommand } from './cli-config-command'
 import { parseQueryArgs, queryHelp, runQueryCommand } from './cli-command'
 import { DEFAULTS, PROVIDER_IDS, type Config } from './config'
-import { TOKMON_PROTOCOL_VERSION, type ConfigState, type ConfigUpdateRequest } from './rpc/contract'
+import { SessionUsageRequestSchema, TOKMON_PROTOCOL_VERSION, type ConfigState, type ConfigUpdateRequest } from './rpc/contract'
 import type { WebSnapshot } from './web/contract'
 
 const state = (config: Config): ConfigState => ({
@@ -63,6 +64,48 @@ test('every query command has focused help without starting the daemon', async (
   assert.match(CONFIG_HELP, /summary-mode <smart\|tightest>/)
   assert.match(CONFIG_HELP, /menu-bar-elements <list>/)
   assert.match(CONFIG_HELP, /menu-bar-pins <ids\|none>\s+Deprecated/)
+})
+
+test('session filters compose with existing query switches and aliases', () => {
+  for (const flag of ['--session', '-s']) {
+    const parsed = parseQueryArgs([flag, 'session-one', '--provider', 'cursor', '--account', 'work',
+      '--model', 'grok', '--period', 'all', '--json', '--compact', '--refresh'])
+    assert.equal(parsed.session, 'session-one')
+    assert.equal(parsed.provider, 'cursor')
+    assert.equal(parsed.account, 'work')
+    assert.equal(parsed.period, 'all')
+    assert.equal(parsed.compact, true)
+    assert.equal(parsed.refresh, true)
+  }
+  for (const flag of ['--session=', '-s=']) {
+    assert.deepEqual(parseQueryArgs([`${flag}session-one`, '--cached']),
+      parseQueryArgs(['--session', 'session-one', '--cached']))
+    for (const id of ['', '../id']) assert.throws(() => parseQueryArgs([`${flag}${id}`]), /session/)
+  }
+  assert.throws(() => parseQueryArgs(['--session', '  ']), /session/)
+})
+
+test('session queries default to all history while explicit periods and account defaults stay unchanged', () => {
+  assert.equal(parseQueryArgs([]).period, 'month')
+  assert.equal(parseQueryArgs(['--session', 'session-one']).period, 'all')
+  assert.equal(parseQueryArgs(['-s', 'session-one']).period, 'all')
+  for (const args of [
+    ['--period', 'month', '--session', 'session-one'],
+    ['--session=session-one', '--period=month'],
+    ['-s', 'session-one', '--period', 'week'],
+  ]) assert.equal(parseQueryArgs(args).period, args.includes('week') ? 'week' : 'month')
+})
+
+test('CLI and RPC accept the same bounded session IDs and reject path-like values', () => {
+  const decode = Schema.decodeUnknownSync(SessionUsageRequestSchema)
+  for (const sessionId of ['abc_123.v2-xyz', '11111111-1111-4111-8111-111111111111', 'a'.repeat(200)]) {
+    assert.equal(parseQueryArgs(['--session', sessionId]).session, sessionId)
+    assert.equal(decode({ sessionId, cached: false, refresh: false }).sessionId, sessionId)
+  }
+  for (const sessionId of ['', '.', '..', '../id', 'a/b', 'a\\b', 'a..b', 'a:b', 'a b', 'a\n', 'é', 'a'.repeat(201)]) {
+    assert.throws(() => parseQueryArgs([`--session=${sessionId}`]), /session/, sessionId)
+    assert.throws(() => decode({ sessionId, cached: false, refresh: false }), sessionId)
+  }
 })
 
 test('config path remains daemon-free and backward compatible', async () => {
@@ -337,4 +380,25 @@ test('usage command emits a stable JSON envelope through an injected snapshot se
   assert.equal(parsed.tokmonConfig, '/tmp/tokmon-config.json')
   assert.deepEqual(parsed.filters, { provider: null, account: null, model: null })
   assert.deepEqual(parsed.models, [])
+})
+
+test('session command requests encode with absent, individual, and combined optional filters', async () => {
+  for (const filters of [{}, { provider: 'claude' }, { account: 'work' }, { provider: 'claude', account: 'work' }]) {
+    const args = Object.entries(filters).flatMap(([key, value]) => [`--${key}`, value])
+    await runQueryCommand('usage', ['--session', 'session-one', '--json', ...args], {
+      async fetchSnapshot(_timeout, refresh, session) {
+        assert.ok(session)
+        const request = { ...session, cached: refresh === null, refresh: refresh === 'all' }
+        assert.deepEqual(Schema.encodeSync(SessionUsageRequestSchema)(request), {
+          sessionId: 'session-one', ...filters, cached: false, refresh: false,
+        })
+        return {
+          version: 'test', generatedAt: Date.UTC(2026, 6, 10), tz: 'UTC',
+          intervalMs: 8_000, billingIntervalMs: 300_000, providers: [], accounts: [],
+          seeded: false, peak: null, sessionId: 'session-one',
+        }
+      },
+      configPath: () => '/tmp/tokmon-config.json',
+    })
+  }
 })

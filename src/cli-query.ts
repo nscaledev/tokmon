@@ -1,7 +1,7 @@
 import { dayKey, startOfMonth, startOfWeek } from './tz'
 import { PROVIDERS } from './providers'
 import { providerLocations, type ProviderLocation } from './provider-locations'
-import type { Metric, ProviderId } from './providers/types'
+import { matchesAccount, type Metric, type ProviderId } from './providers/types'
 import type { WebAccount, WebSnapshot } from './web/contract'
 import { configLocation } from './config'
 
@@ -14,6 +14,7 @@ export interface UsageFilters {
   provider?: ProviderId
   account?: string
   model?: string
+  session?: string
 }
 
 export interface CliSource {
@@ -54,11 +55,12 @@ export interface UsageReport {
     provider: ProviderId | null
     account: string | null
     model: string | null
+    session?: string
   }
   totals: CliUsageTotals
   models: CliModelUsage[]
   sources: CliSource[]
-  errors: Array<{ sourceId: string; tableState: string }>
+  errors: Array<{ sourceId: string; tableState: string; message?: string }>
 }
 
 export interface ProvidersReport {
@@ -91,11 +93,7 @@ function firstDayFor(period: UsagePeriod, now: number, tz: string): string | nul
 
 function accountMatches(account: WebAccount, filters: UsageFilters): boolean {
   if (filters.provider && account.providerId !== filters.provider) return false
-  if (!filters.account) return true
-  const needle = filters.account.toLowerCase()
-  return account.id.toLowerCase() === needle
-    || account.name.toLowerCase().includes(needle)
-    || (account.email?.toLowerCase().includes(needle) ?? false)
+  return matchesAccount(account, filters.account)
 }
 
 async function cliSource(account: WebAccount): Promise<CliSource> {
@@ -138,6 +136,9 @@ export async function buildUsageReport(
   now = Date.now(),
   tokmonConfig = configLocation(),
 ): Promise<UsageReport> {
+  if (filters.session && snapshot.sessionId !== filters.session) {
+    throw new Error('Snapshot is not scoped to the requested session')
+  }
   const firstDay = firstDayFor(filters.period, now, snapshot.tz)
   const accounts = snapshot.accounts.filter(account => accountMatches(account, filters))
   const sources = await Promise.all(accounts.map(cliSource))
@@ -190,13 +191,16 @@ export async function buildUsageReport(
       provider: filters.provider ?? null,
       account: filters.account ?? null,
       model: filters.model ?? null,
+      ...(filters.session ? { session: filters.session } : {}),
     },
     totals,
     models: sorted,
     sources,
     errors: accounts
       .filter(account => account.tableState === 'error')
-      .map(account => ({ sourceId: sourceId(account), tableState: account.tableState })),
+      .map(account => ({ sourceId: sourceId(account), tableState: account.tableState,
+        ...(account.tableError ? { message: account.tableError } : {}),
+      })),
   }
 }
 
@@ -237,6 +241,7 @@ export function formatUsageReport(report: UsageReport): string {
   const lines = [
     `tokmon usage · ${report.period} · ${report.generatedAt} · ${report.timezone}`,
     `Tokmon config: ${report.tokmonConfig}`,
+    ...(report.filters.session ? [`Session: ${report.filters.session} (excludes child sessions)`] : []),
     `${fit('PROVIDER', 12)} ${fit('ACCOUNT', 22)} ${fit('MODEL', 32)} ${'TOKENS'.padStart(10)} ${'CALLS'.padStart(7)} ${'COST'.padStart(10)}`,
   ]
   if (report.models.length === 0) lines.push('No matching model usage.')
@@ -258,7 +263,7 @@ export function formatUsageReport(report: UsageReport): string {
     const paths = source.locations.filter(item => item.exists).map(item => item.path)
     lines.push(`  ${source.id}  ${paths.join(', ') || source.homeDir || '(no local path found)'}`)
   }
-  if (report.errors.length) lines.push(`Warnings: ${report.errors.map(error => `${error.sourceId} ${error.tableState}`).join(', ')}`)
+  if (report.errors.length) lines.push(`Warnings: ${report.errors.map(error => `${error.sourceId} ${error.message ?? error.tableState}`).join(', ')}`)
   return lines.join('\n')
 }
 

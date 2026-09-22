@@ -12,6 +12,7 @@ import {
   ConfigReadFailure,
   ConfigUpdateConflictFailure,
   RefreshFailure,
+  SessionUsageFailure,
   TYPED_READ_FAILURES_CAPABILITY,
   TOKMON_WS_METHODS,
   TOKMON_WS_PATH,
@@ -226,6 +227,13 @@ export async function mountWsRpc(server: Server, deps: MountWsRpcDeps): Promise<
         configUpdateEffect(deps.engine, deps.state, config as never),
       [TOKMON_WS_METHODS.refresh]: ({ scope }) =>
         refreshEffect(deps.engine, deps.state, scope),
+      [TOKMON_WS_METHODS.sessionUsage]: request =>
+        Effect.tryPromise({
+          try: () => deps.engine.sessionUsage(request),
+          catch: error => new SessionUsageFailure({
+            kind: 'session-usage', message: failureMessage(error, 'Session usage unavailable'),
+          }),
+        }),
       [TOKMON_WS_METHODS.browseFs]: ({ path, capabilities }) =>
         readEffect(
           () => (deps.browseHome ?? listHomeDirectory)(path),

@@ -11,6 +11,8 @@ import { createRefreshQueue, settleRefreshTasks } from './refresh-queue'
 import { DEFAULTS } from '../config-schema'
 import { MIN_STALE_AFTER_MS } from '../usage-semantics'
 import { decodeWebSnapshot } from './snapshot-schema'
+import { PROVIDERS } from '../providers'
+import { tabulate } from '../providers/usage-core'
 
 function deferred() {
   let resolve!: () => void
@@ -353,3 +355,144 @@ test('the engine reports a configuration key that tracks what it applied', () =>
     engine.stop()
   }
 })
+
+test('colliding session IDs cannot merge providers, including cached results', async t => {
+  const providers = ['claude', 'codex'] as const
+  for (const [index, provider] of providers.entries()) {
+    const reader = PROVIDERS[provider].fetchSessionTable
+    t.after(() => { PROVIDERS[provider].fetchSessionTable = reader })
+    PROVIDERS[provider].fetchSessionTable = async () => tabulate([{
+      ts: Date.UTC(2026, 6, 10), model: 'test', input: index ? 153 : 53, output: 0,
+      cacheRead: 0, cacheCreate: 0, cacheSavings: 0, cost: 1,
+    }], 'UTC')
+  }
+  const engine = createDataEngine({
+    version: 'test', config: { ...DEFAULTS }, ...baseEngineConfig(),
+    resolved: providers.map(providerId => resolvedAccount({ id: providerId, providerId })),
+  })
+  t.after(() => engine.stop())
+  const request = { sessionId: 'same-id', cached: false, refresh: false }
+  await assert.rejects(engine.sessionUsage({ ...request, sessionId: '../id', provider: 'codex' }), /Invalid session ID/)
+  await assert.rejects(engine.sessionUsage(request), /multiple providers.*--provider/)
+  await assert.rejects(engine.sessionUsage({ ...request, cached: true }), /multiple providers.*--provider/)
+  const specific = await engine.sessionUsage({ ...request, provider: 'codex' })
+  assert.deepEqual(specific.accounts.map(account => account.providerId), ['codex'])
+  assert.equal(specific.accounts[0].table?.daily[0].total, 153)
+  PROVIDERS.claude.fetchSessionTable = async () => null
+  const unambiguous = await engine.sessionUsage(request)
+  assert.deepEqual(unambiguous.accounts.map(account => account.providerId), ['codex'])
+})
+
+test('a forced session refresh queues behind a weaker read and coalesces equal-strength callers', async t => {
+  const gates = [deferred(), deferred()]
+  const tables = [53, 153].map(input => tabulate([{
+    ts: Date.UTC(2026, 6, 10), model: 'test', input, output: 0,
+    cacheRead: 0, cacheCreate: 0, cacheSavings: 0, cost: 1,
+  }], 'UTC'))
+  const flags: boolean[] = []
+  let active = 0
+  const reader = PROVIDERS.cursor.fetchSessionTable
+  t.after(() => { PROVIDERS.cursor.fetchSessionTable = reader })
+  PROVIDERS.cursor.fetchSessionTable = async (_account, _tz, _session, refresh) => {
+    const index = flags.length
+    flags.push(refresh ?? false)
+    assert.equal(++active, 1, 'session readers must never race cache writes')
+    try { await gates[index].promise; return tables[index] } finally { active-- }
+  }
+  const engine = createDataEngine({
+    version: 'test', config: { ...DEFAULTS }, ...baseEngineConfig(),
+    resolved: [resolvedAccount({ providerId: 'cursor' })],
+  })
+  t.after(() => { for (const gate of gates) gate.resolve(); engine.stop() })
+  const request = { sessionId: 'session-one', cached: false, refresh: false }
+  const first = engine.sessionUsage(request)
+  const sameWeak = engine.sessionUsage(request)
+  const forced = engine.sessionUsage({ ...request, refresh: true })
+  const sameForced = engine.sessionUsage({ ...request, refresh: true })
+  let forcedSettled = false
+  void forced.then(() => { forcedSettled = true })
+  await turn()
+  assert.deepEqual(flags, [false])
+  gates[0].resolve()
+  const weakResults = await Promise.all([first, sameWeak])
+  await turn()
+  assert.deepEqual(flags, [false, true])
+  assert.equal(forcedSettled, false)
+  assert.deepEqual(weakResults.map(result => result.accounts[0].table?.daily[0].total), [53, 53])
+  assert.equal((await engine.sessionUsage({ ...request, cached: true })).accounts[0].table?.daily[0].total, 53)
+  const joined = engine.sessionUsage(request)
+  gates[1].resolve()
+  const strongResults = await Promise.all([forced, sameForced, joined])
+  assert.deepEqual(strongResults.map(result => result.accounts[0].table?.daily[0].total), [153, 153, 153])
+  assert.deepEqual(flags, [false, true])
+  assert.equal((await engine.sessionUsage({ ...request, cached: true })).accounts[0].table?.daily[0].total, 153)
+})
+
+test('a failed queued session refresh retains the preceding successful read from a cold cache', async t => {
+  const gate = deferred()
+  const table = tabulate([{
+    ts: Date.UTC(2026, 6, 10), model: 'test', input: 53, output: 0,
+    cacheRead: 0, cacheCreate: 0, cacheSavings: 0, cost: 1,
+  }], 'UTC')
+  const flags: boolean[] = []
+  const reader = PROVIDERS.cursor.fetchSessionTable
+  t.after(() => { PROVIDERS.cursor.fetchSessionTable = reader })
+  PROVIDERS.cursor.fetchSessionTable = async (_account, _tz, _session, refresh) => {
+    flags.push(refresh ?? false)
+    if (refresh) throw new Error('forced read failed')
+    await gate.promise
+    return table
+  }
+  const engine = createDataEngine({
+    version: 'test', config: { ...DEFAULTS }, ...baseEngineConfig(),
+    resolved: [resolvedAccount({ providerId: 'cursor' })],
+  })
+  t.after(() => { gate.resolve(); engine.stop() })
+  const request = { sessionId: 'session-one', cached: false, refresh: false }
+  const first = engine.sessionUsage(request)
+  const forced = engine.sessionUsage({ ...request, refresh: true })
+  assert.deepEqual(flags, [false])
+  gate.resolve()
+  const [success, failed] = await Promise.all([first, forced])
+  const cached = await engine.sessionUsage({ ...request, cached: true })
+  assert.deepEqual(flags, [false, true])
+  assert.equal(success.accounts[0].table?.daily[0].total, 53)
+  assert.equal(failed.accounts[0].tableState, 'error')
+  assert.equal(failed.accounts[0].tableError, 'forced read failed')
+  assert.equal(failed.accounts[0].table?.daily[0].total, 53)
+  assert.equal(failed.accounts[0].tableUpdatedAt, success.accounts[0].tableUpdatedAt)
+  assert.equal(failed.generatedAt, success.generatedAt)
+  assert.equal(cached.accounts[0].table?.daily[0].total, 53)
+  assert.equal(cached.generatedAt, success.generatedAt)
+})
+
+for (const invalidate of ['config', 'stop']) {
+  test(`a queued session refresh is discarded on ${invalidate} invalidation`, async t => {
+    const gate = deferred()
+    const flags: boolean[] = []
+    const reader = PROVIDERS.cursor.fetchSessionTable
+    t.after(() => { PROVIDERS.cursor.fetchSessionTable = reader })
+    PROVIDERS.cursor.fetchSessionTable = async (_account, _tz, _session, refresh) => {
+      flags.push(refresh ?? false)
+      await gate.promise
+      return { daily: [], weekly: [], monthly: [] }
+    }
+    const config = { ...baseEngineConfig(), resolved: [resolvedAccount({ providerId: 'cursor' })] }
+    const engine = createDataEngine({ version: 'test', config: { ...DEFAULTS }, ...config })
+    t.after(() => { gate.resolve(); engine.stop() })
+    const request = { sessionId: 'session-one', cached: false, refresh: false }
+    const first = assert.rejects(engine.sessionUsage(request), /configuration changed/)
+    const forced = assert.rejects(engine.sessionUsage({ ...request, refresh: true }), /configuration changed/)
+    await turn()
+    if (invalidate === 'config') engine.setConfig(config, { startRefresh: false })
+    else engine.stop()
+    gate.resolve()
+    await Promise.all([first, forced])
+    assert.deepEqual(flags, [false])
+    if (invalidate === 'config') {
+      const cached = await engine.sessionUsage({ ...request, cached: true })
+      assert.equal(cached.accounts[0].table, null)
+      assert.match(cached.accounts[0].tableError!, /No cached session usage/)
+    }
+  })
+}

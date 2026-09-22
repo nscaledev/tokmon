@@ -14,6 +14,9 @@ import type { Config, DetectedAccountRef } from '../config-schema'
 import { MIN_STALE_AFTER_MS } from '../usage-semantics'
 import { createRefreshQueue, settleRefreshTasks, type RefreshQueue } from './refresh-queue'
 import { decodeWebSnapshot } from './snapshot-schema'
+import { PROVIDERS } from '../providers'
+import { matchesAccount, SESSION_ID_PATTERN } from '../providers/types'
+import type { SessionUsageRequest } from '../rpc/contract'
 
 const TABLE_INTERVAL_MS = 300_000
 const PEAK_INTERVAL_MS = 300_000
@@ -21,6 +24,8 @@ const IDLE_PAUSE_MS = 60_000
 const SNAPSHOT_CACHE_THROTTLE_MS = 20_000
 const REVEAL_THROTTLE_MS = 500
 const FETCH_TIMEOUT_MS = 30_000
+// Bound daemon memory across sessions; evict the least recently refreshed entry.
+const SESSION_CACHE_MAX_ENTRIES = 128
 
 export function billingNeedsCatchUp(
   accounts: readonly ResolvedAccount[],
@@ -76,6 +81,7 @@ interface DataEngineOptions {
 
 export interface DataEngine {
   snapshot(): WebSnapshot | null
+  sessionUsage(request: SessionUsageRequest): Promise<WebSnapshot>
   start(): void
   subscribe(onSnapshot: (snapshot: WebSnapshot) => void): () => void
   subscribeConfig(onConfig: (config: Config) => void): () => void
@@ -159,6 +165,9 @@ export function createDataEngine(opts: DataEngineOptions): DataEngine {
 
   // Bumped on setConfig(); in-flight loops bail if epoch changed to avoid clobbering reconciled maps.
   let configEpoch = 0
+  type SessionResult = { table: TableData | null; at: number }
+  const sessionCache = new Map<string, SessionResult>()
+  const sessionInflight = new Map<string, { refresh: boolean; promise: Promise<SessionResult> }>()
 
   let hasClaude = resolved.some(r => r.account.providerId === 'claude')
 
@@ -378,6 +387,73 @@ export function createDataEngine(opts: DataEngineOptions): DataEngine {
   return {
     snapshot: () => current,
 
+    async sessionUsage(request) {
+      if (stopped) throw new Error('Data engine stopped')
+      if (!SESSION_ID_PATTERN.test(request.sessionId)) throw new Error('Invalid session ID')
+      if (request.cached && request.refresh) throw new Error('Cannot refresh a cached-only session query')
+      if (request.provider && !PROVIDERS[request.provider].fetchSessionTable) {
+        throw new Error(`Session queries are not supported for ${request.provider}`)
+      }
+      lastActivity = Date.now()
+      const epoch = configEpoch
+      const snapshot = buildSnapshot()
+      const candidates = snapshot.accounts.filter(account =>
+        (!request.provider || account.providerId === request.provider)
+        && matchesAccount(account, request.account)
+        && PROVIDERS[account.providerId].fetchSessionTable)
+      const accounts = await Promise.all(candidates.map(async account => {
+        const key = JSON.stringify([account.providerId, account.id, account.homeDir, tz, request.sessionId])
+        const cached = sessionCache.get(key)
+        try {
+          let result = cached
+          if (!request.cached) {
+            let pending = sessionInflight.get(key)
+            if (!pending || (request.refresh && !pending.refresh)) {
+              const reader = PROVIDERS[account.providerId].fetchSessionTable!
+              const read = async () => {
+                if (stopped || epoch !== configEpoch) throw new Error('Account configuration changed; retry the session query')
+                const table = await reader({ ...account, homeDir: account.homeDir ?? undefined },
+                  tz, request.sessionId, request.refresh)
+                const value = { table, at: Date.now() }
+                if (!stopped && epoch === configEpoch) {
+                  sessionCache.delete(key)
+                  sessionCache.set(key, value)
+                  if (sessionCache.size > SESSION_CACHE_MAX_ENTRIES) sessionCache.delete(sessionCache.keys().next().value!)
+                }
+                return value
+              }
+              // A force must run after a weaker read, including its cache write.
+              // Keep tracking the reader even if an individual caller times out.
+              const promise = (pending ? pending.promise.catch(() => {}).then(read) : read()).finally(() => {
+                if (sessionInflight.get(key) === pending) sessionInflight.delete(key)
+              })
+              pending = { refresh: request.refresh, promise }
+              sessionInflight.set(key, pending)
+            }
+            result = await withTimeout(pending.promise, FETCH_TIMEOUT_MS)
+          }
+          if (!result) throw new Error('No cached session usage; run without --cached first')
+          if (!result.table) return null
+          return { ...account, dashboard: null, table: result.table, tableState: 'ready' as const,
+            tableUpdatedAt: result.at }
+        } catch (error) {
+          const fallback = sessionCache.get(key) ?? cached
+          return { ...account, dashboard: null, table: fallback?.table ?? null, tableState: 'error' as const,
+            tableUpdatedAt: fallback?.at ?? null,
+            tableError: error instanceof Error ? error.message : 'Session usage unavailable' }
+        }
+      }))
+      if (stopped || epoch !== configEpoch) throw new Error('Account configuration changed; retry the session query')
+      const selected = accounts.filter(account => account !== null)
+      if (!request.provider && new Set(selected.filter(account => account.table?.daily.length)
+        .map(account => account.providerId)).size > 1) {
+        throw new Error('Session ID matches multiple providers; specify --provider')
+      }
+      const timestamps = selected.flatMap(account => account.tableUpdatedAt === null ? [] : [account.tableUpdatedAt])
+      return { ...snapshot, sessionId: request.sessionId, accounts: selected,
+        generatedAt: timestamps.length ? Math.min(...timestamps) : Date.now() }
+    },
+
     start() {
       runInBackground(refreshSummary.run(true))
       runInBackground(refreshTable.run(true))
@@ -408,6 +484,8 @@ export function createDataEngine(opts: DataEngineOptions): DataEngine {
       if (stopped) return
       stopLoops()
       configEpoch++
+      sessionCache.clear()
+      sessionInflight.clear()
       tz = next.tz
       summaryIntervalMs = next.summaryIntervalMs
       billingIntervalMs = next.billingIntervalMs
@@ -480,6 +558,8 @@ export function createDataEngine(opts: DataEngineOptions): DataEngine {
     },
 
     stop() {
+      sessionCache.clear()
+      sessionInflight.clear()
       stopped = true
       stopLoops()
       refreshSummary.stop()

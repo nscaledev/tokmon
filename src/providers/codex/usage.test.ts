@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { codexPriceFor, codexTable } from './usage'
+import { codexPriceFor, codexSessionTable, codexTable } from './usage'
 
 test('Codex priority service tier doubles every token class', () => {
   const standard = codexPriceFor('gpt-5.6-sol')
@@ -82,3 +82,148 @@ test('Codex spawned sessions exclude replayed history that crosses a timestamp s
   assert.equal(table.daily[0].total, 45)
   assert.equal(table.daily[0].count, 1)
 })
+
+for (const format of ['record-first', 'count-first', 'records-only', 'record-first-total-only', 'count-first-total-only']) {
+  test(`Codex ${format} usage records share cumulative deduplication with token counts`, async t => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'tokmon-codex-pairs-'))
+    t.after(() => rm(homeDir, { recursive: true, force: true }))
+    const sessions = join(homeDir, '.codex', 'sessions')
+    await mkdir(sessions, { recursive: true })
+    const sessionId = 'paired-usage-fixture'
+    const start = Date.UTC(2026, 0, 2)
+    const timestamp = (offset: number) => new Date(start + offset).toISOString()
+    const usage = (input: number, cached: number, output: number, reasoning = 1) => ({
+      input_tokens: input, cached_input_tokens: cached, output_tokens: output,
+      reasoning_output_tokens: reasoning, total_tokens: input + output,
+    })
+    const kinds = format === 'records-only' ? ['record']
+      : format.startsWith('record-first') ? ['record', 'count'] : ['count', 'record']
+    const rows = [
+      { type: 'session_meta', payload: { id: sessionId } },
+      { type: 'turn_context', payload: { model: 'gpt-5.6-terra' } },
+      ...[1, 2].flatMap(n => kinds.map((kind, index) => ({
+        timestamp: timestamp(n * 1000 + index * 400),
+        type: kind === 'record' ? 'token_usage_record' : 'event_msg',
+        payload: kind === 'record' ? {
+          thread_id: 'fixture-thread', turn_id: `turn-${n}`, session_id: sessionId,
+          root_turn_id: `turn-${n}`, response_id: `response-${n}`,
+          usage: usage(17, 5, 3),
+          thread_token_usage: usage(17 * n, 5 * n, 3 * n, n),
+          turn_token_usage: usage(17, 5, 3),
+        } : { type: 'token_count', info: {
+          ...(format.endsWith('total-only') ? {} : { last_token_usage: usage(17, 5, 3) }),
+          total_token_usage: usage(17 * n, 5 * n, 3 * n, n),
+        } },
+      }))),
+      // With no last delta, only 5 input (2 cached) + 3 output are new.
+      { timestamp: timestamp(3000), type: 'event_msg', payload: { type: 'token_count', info: {
+        total_token_usage: usage(39, 12, 9, 3),
+      } } },
+      // Other generic usage records still retain their existing ingestion path.
+      { timestamp: timestamp(4000), type: 'response_completed', payload: { usage: usage(11, 4, 1) } },
+      // A counter reset starts a new baseline; the following increment is a delta.
+      { timestamp: timestamp(5000), type: 'event_msg', payload: { type: 'token_count', info: {
+        total_token_usage: usage(5, 2, 2),
+      } } },
+      { timestamp: timestamp(6000), type: 'event_msg', payload: { type: 'token_count', info: {
+        total_token_usage: usage(9, 3, 3),
+      } } },
+    ]
+    await writeFile(join(sessions, `${sessionId}.jsonl`), rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+    for (const table of [await codexTable('UTC', homeDir), await codexSessionTable('UTC', sessionId, homeDir)]) {
+      assert.ok(table)
+      assert.equal(table.daily.length, 1)
+      const row = table.daily[0]
+      assert.deepEqual({ input: row.input, cached: row.cacheRead, output: row.output, total: row.total, count: row.count },
+        { input: 40, cached: 19, output: 13, total: 72, count: 6 })
+    }
+  })
+}
+
+test('Codex structured records without cumulative totals retain distinct requests with equal usage', async t => {
+  const homeDir = await mkdtemp(join(tmpdir(), 'tokmon-codex-independent-'))
+  t.after(() => rm(homeDir, { recursive: true, force: true }))
+  const sessions = join(homeDir, '.codex', 'sessions')
+  await mkdir(sessions, { recursive: true })
+  const sessionId = 'independent-usage-fixture'
+  const rows = [
+    { type: 'session_meta', payload: { id: sessionId } },
+    ...[1, 2].map(n => ({
+      timestamp: new Date(Date.UTC(2026, 0, 2, 0, 0, n)).toISOString(), type: 'token_usage_record',
+      payload: { response_id: `response-${n}`, usage: {
+        input_tokens: 17, cached_input_tokens: 5, output_tokens: 3, total_tokens: 20,
+      } },
+    })),
+  ]
+  await writeFile(join(sessions, `${sessionId}.jsonl`), rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+  for (const table of [await codexTable('UTC', homeDir), await codexSessionTable('UTC', sessionId, homeDir)]) {
+    assert.ok(table)
+    assert.equal(table.daily[0].total, 40)
+    assert.equal(table.daily[0].count, 2)
+  }
+})
+
+for (const field of ['invalid', 'created_at', 'createdAt', 'time']) {
+  test(`Codex ${field} record timestamps do not lose valid cumulative usage`, async t => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'tokmon-codex-timestamps-'))
+    t.after(() => rm(homeDir, { recursive: true, force: true }))
+    const sessions = join(homeDir, '.codex', 'sessions')
+    await mkdir(sessions, { recursive: true })
+    const sessionId = 'timestamp-usage-fixture'
+    const timestamp = '2026-01-02T00:00:00Z'
+    const usage = { input_tokens: 17, cached_input_tokens: 5, output_tokens: 3, total_tokens: 20 }
+    const rows = [
+      { type: 'session_meta', payload: { id: sessionId } },
+      { ...(field === 'invalid' ? { timestamp: 'bad timestamp' } : { [field]: timestamp }),
+        type: 'token_usage_record', payload: { usage, thread_token_usage: usage } },
+      ...(field === 'invalid' ? [{ timestamp, type: 'event_msg', payload: { type: 'token_count', info: {
+        last_token_usage: usage, total_token_usage: usage,
+      } } }] : []),
+      { timestamp: '2026-01-02T00:00:01Z', type: 'event_msg', payload: { type: 'token_count', info: {
+        total_token_usage: { input_tokens: 21, cached_input_tokens: 8, output_tokens: 4, total_tokens: 25 },
+      } } },
+    ]
+    await writeFile(join(sessions, `${sessionId}.jsonl`), rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+    for (const table of [await codexTable('UTC', homeDir), await codexSessionTable('UTC', sessionId, homeDir)]) {
+      assert.ok(table)
+      assert.equal(table.daily[0].total, 25)
+      assert.equal(table.daily[0].count, 2)
+    }
+  })
+}
+
+for (const scenario of ['usage alias', 'duplicate model metadata']) {
+  test(`Codex structured records preserve ${scenario}`, async t => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'tokmon-codex-fields-'))
+    t.after(() => rm(homeDir, { recursive: true, force: true }))
+    const sessions = join(homeDir, '.codex', 'sessions')
+    await mkdir(sessions, { recursive: true })
+    const sessionId = 'field-usage-fixture'
+    const usage = { input_tokens: 17, cached_input_tokens: 5, output_tokens: 3, total_tokens: 20 }
+    const rows = [
+      { type: 'session_meta', payload: { id: sessionId } },
+      ...(scenario === 'usage alias' ? [
+        { timestamp: '2026-01-02T00:00:00Z', type: 'token_usage_record', usage,
+          payload: { thread_token_usage: { input_tokens: 102, cached_input_tokens: 30, output_tokens: 18, total_tokens: 120 } } },
+      ] : [
+        { timestamp: '2026-01-02T00:00:00Z', type: 'event_msg', payload: { type: 'token_count', info: {
+          last_token_usage: usage, total_token_usage: usage,
+        } } },
+        { timestamp: '2026-01-02T00:00:00.400Z', type: 'token_usage_record',
+          payload: { usage, thread_token_usage: usage, model: 'gpt-5.6-terra' } },
+        { timestamp: '2026-01-02T00:00:01Z', type: 'event_msg', payload: { type: 'token_count', info: {
+          last_token_usage: usage,
+          total_token_usage: { input_tokens: 34, cached_input_tokens: 10, output_tokens: 6, total_tokens: 40 },
+        } } },
+      ]),
+    ]
+    await writeFile(join(sessions, `${sessionId}.jsonl`), rows.map(row => JSON.stringify(row)).join('\n') + '\n')
+    for (const table of [await codexTable('UTC', homeDir), await codexSessionTable('UTC', sessionId, homeDir)]) {
+      assert.ok(table)
+      const row = table.daily[0]
+      assert.equal(row.total, scenario === 'usage alias' ? 20 : 40)
+      assert.deepEqual(Object.fromEntries(row.breakdown.map(model => [model.name, model.count])),
+        scenario === 'usage alias' ? { 'gpt-5': 1 } : { 'gpt-5': 1, 'gpt-5.6-terra': 1 })
+    }
+  })
+}

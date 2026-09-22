@@ -3,11 +3,12 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { DashboardData, TableData } from '../../types'
 import { envDir } from '../../config'
-import { type Entry, summarize, tabulate, loadCachedEntries, safeNum, dashboardSince, tableSince, collectSessionFiles } from '../usage-core'
+import { type Entry, summarize, tabulate, dedupe, loadCachedEntries, safeNum, dashboardSince, tableSince, collectSessionFiles } from '../usage-core'
 import { readJsonLines } from '../_shared/jsonl'
 import { modelKeyMatches } from '../_shared/metric'
 import { makePriceResolver } from '../_shared/pricing'
 import { timestampMs } from '../_shared/time'
+import { sessionFiles } from '../_shared/session'
 
 const PRICING: Record<string, { in: number; cr: number; out: number }> = {
   // Bare 'gpt-5.6' (no tier suffix) appears in real session logs; without an
@@ -50,6 +51,10 @@ export function codexHomes(homeDir?: string): string[] {
   homes.push(join(homedir(), '.codex'))
   homes.push(join(homedir(), '.config', 'codex'))
   return [...new Set(homes)]
+}
+
+function codexRoots(homeDir?: string): string[] {
+  return codexHomes(homeDir).flatMap(home => [join(home, 'sessions'), join(home, 'archived_sessions')])
 }
 
 export async function detectCodex(homeDir?: string): Promise<boolean> {
@@ -146,7 +151,7 @@ function timestampSecond(value: unknown): string | null {
   return ts === null ? null : new Date(ts).toISOString().slice(0, 19)
 }
 
-async function hasForkedHistory(path: string): Promise<boolean> {
+async function hasForkedHistory(path: string, ignoreReadErrors: boolean): Promise<boolean> {
   let handle: Awaited<ReturnType<typeof openFile>> | null = null
   try {
     handle = await openFile(path, 'r')
@@ -154,7 +159,8 @@ async function hasForkedHistory(path: string): Promise<boolean> {
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
     const prefix = buffer.subarray(0, bytesRead).toString('utf8')
     return prefix.includes('thread_spawn') && /"forked_from_id"\s*:\s*"[^"]+"/.test(prefix)
-  } catch {
+  } catch (error) {
+    if (!ignoreReadErrors) throw error
     return false
   } finally {
     await handle?.close().catch(() => {})
@@ -182,13 +188,13 @@ function findTimestamp(obj: any): number | null {
   return timestampMs(obj?.timestamp ?? obj?.payload?.timestamp ?? obj?.created_at ?? obj?.createdAt ?? obj?.time)
 }
 
-async function parseFile(path: string): Promise<Entry[]> {
+async function parseFile(path: string, ignoreReadErrors = true): Promise<Entry[]> {
   const entries: Entry[] = []
   let model = 'gpt-5'
   let serviceTier: string | undefined
   let prevTotal: CodexDelta | null = null
   let prevSig: string | null = null
-  let skipReplay = await hasForkedHistory(path)
+  let skipReplay = await hasForkedHistory(path, ignoreReadErrors)
   const relevantLine = (line: string) =>
     line.includes('token_count')
     || line.includes('task_started')
@@ -197,7 +203,7 @@ async function parseFile(path: string): Promise<Entry[]> {
     || line.includes('"usage"')
     || line.includes('input_tokens')
     || line.includes('prompt_tokens')
-  for await (const obj of readJsonLines(path, relevantLine)) {
+  for await (const obj of readJsonLines(path, relevantLine, { ignoreReadErrors })) {
     try {
       const payloadType = obj?.payload?.type ?? obj?.type
       if (skipReplay) {
@@ -214,7 +220,8 @@ async function parseFile(path: string): Promise<Entry[]> {
         if (typeof tier === 'string') serviceTier = tier
         continue
       }
-      if (payloadType !== 'token_count') {
+      const recordTotal = payloadType === 'token_usage_record' ? normalizeUsage(obj?.payload?.thread_token_usage) : undefined
+      if (payloadType !== 'token_count' && !recordTotal) {
         const usage = findUsage(obj)
         if (!usage) continue
         const m = extractModel(obj)
@@ -241,13 +248,22 @@ async function parseFile(path: string): Promise<Entry[]> {
         continue
       }
 
+      // New logs can emit both formats for one request; share signature/delta state.
+      // Paired thread_token_usage and total_token_usage describe the same cumulative
+      // counter; differing totals are not considered duplicates.
       const info = obj?.payload?.info
-      const total = normalizeUsage(info?.total_token_usage)
-      const last = normalizeUsage(info?.last_token_usage)
-      const tsValue = obj.timestamp ?? obj?.payload?.timestamp
+      const total = recordTotal ?? normalizeUsage(info?.total_token_usage)
+      const last = recordTotal ? findUsage(obj) : normalizeUsage(info?.last_token_usage)
+      const ts = findTimestamp(obj)
+      if (ts === null) continue
+      if (recordTotal) {
+        const m = extractModel(obj)
+        if (typeof m === 'string' && m.trim()) model = m
+      }
 
       const sig = eventSig(last, total)
-      if (sig === prevSig) continue
+      if (sig === prevSig
+        || (total && prevTotal && eventSig(undefined, total) === eventSig(undefined, prevTotal))) continue
       prevSig = sig
 
       let d: CodexDelta | undefined = last
@@ -257,9 +273,6 @@ async function parseFile(path: string): Promise<Entry[]> {
       }
       if (total) prevTotal = total
       if (!d) continue
-
-      const ts = timestampMs(tsValue)
-      if (ts === null) continue
 
       const m = extractModel(obj)
       if (typeof m === 'string' && m.trim()) model = m
@@ -287,8 +300,7 @@ async function parseFile(path: string): Promise<Entry[]> {
 }
 
 async function loadEntries(since: number, homeDir?: string): Promise<Entry[]> {
-  const roots = codexHomes(homeDir).flatMap(home => [join(home, 'sessions'), join(home, 'archived_sessions')])
-  const files = await collectSessionFiles(roots, path => path.endsWith('.jsonl'), since)
+  const files = await collectSessionFiles(codexRoots(homeDir), path => path.endsWith('.jsonl'), since)
   return loadCachedEntries(files, parseFile, since)
 }
 
@@ -300,4 +312,10 @@ export async function codexDashboard(tz: string, homeDir?: string): Promise<Dash
 export async function codexTable(tz: string, homeDir?: string): Promise<TableData> {
   const entries = await loadEntries(tableSince(tz), homeDir)
   return tabulate(entries, tz)
+}
+
+export async function codexSessionTable(tz: string, sessionId: string, homeDir?: string): Promise<TableData | null> {
+  const files = await sessionFiles(codexRoots(homeDir), 'codex', sessionId)
+  if (files.length === 0) return null
+  return tabulate(dedupe((await Promise.all(files.map(path => parseFile(path, false)))).flat()), tz)
 }

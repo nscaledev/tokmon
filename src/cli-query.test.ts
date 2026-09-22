@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildUsageReport, formatUsageReport } from './cli-query'
+import { parseQueryArgs } from './cli-command-args'
 import type { WebSnapshot } from './web/contract'
 
 const detail = (name: string, cost: number, count: number) => ({
@@ -81,6 +82,16 @@ test('usage report aggregates daily model rows for the requested period', async 
   assert.ok(report.sources[0].locations.some(item => item.kind === 'usage'))
 })
 
+test('the default session period includes rows before the current month', async () => {
+  const period = parseQueryArgs(['--session', 'session-one']).period
+  const report = await buildUsageReport({ ...snapshot, sessionId: 'session-one' },
+    { session: 'session-one', period }, Date.UTC(2026, 6, 10, 12))
+  assert.equal(report.period, 'all')
+  assert.equal(report.totals.tokens, 720)
+  assert.equal(report.totals.calls, 10)
+  assert.equal(report.totals.cost, 7)
+})
+
 test('usage filters compose and human output remains agent-readable', async () => {
   const report = await buildUsageReport(snapshot, {
     period: 'today',
@@ -94,4 +105,17 @@ test('usage filters compose and human output remains agent-readable', async () =
   assert.match(text, /PROVIDER\s+ACCOUNT\s+MODEL/)
   assert.match(text, /gpt-5\.6-luna/)
   assert.match(text, /Sources:/)
+})
+
+test('session reports reject unscoped snapshots and expose scope and source failures', async () => {
+  const filters = { session: 'session-one', period: 'all' as const }
+  await assert.rejects(buildUsageReport(snapshot, filters), /not scoped/)
+  await assert.rejects(buildUsageReport({ ...snapshot, sessionId: 'other' }, filters), /not scoped/)
+  const report = await buildUsageReport({ ...snapshot, sessionId: 'session-one',
+    accounts: snapshot.accounts.map(account => ({ ...account, tableState: 'error', tableError: 'Refresh failed' })),
+  }, filters)
+  assert.equal(report.filters.session, 'session-one')
+  assert.equal(report.errors[0].message, 'Refresh failed')
+  assert.match(formatUsageReport(report), /Session: session-one \(excludes child sessions\)/)
+  assert.match(formatUsageReport(report), /Refresh failed/)
 })

@@ -1,5 +1,5 @@
 import { USAGE_PERIODS, type UsagePeriod } from './cli-query'
-import { PROVIDER_IDS, type ProviderId } from './providers/types'
+import { PROVIDER_IDS, SESSION_ID_PATTERN, type ProviderId } from './providers/types'
 
 export interface ParsedQueryArgs {
   help: boolean
@@ -12,6 +12,7 @@ export interface ParsedQueryArgs {
   provider?: ProviderId
   account?: string
   model?: string
+  session?: string
   positionals: string[]
 }
 
@@ -22,6 +23,7 @@ function valueAfter(args: string[], index: number, name: string): [string, numbe
 }
 
 export function parseQueryArgs(args: string[]): ParsedQueryArgs {
+  let periodSpecified = false
   const parsed: ParsedQueryArgs = {
     help: false,
     json: false,
@@ -45,12 +47,14 @@ export function parseQueryArgs(args: string[]): ParsedQueryArgs {
         throw new Error(`--period must be one of: ${USAGE_PERIODS.join(', ')}`)
       }
       parsed.period = value as UsagePeriod
+      periodSpecified = true
     } else if (arg.startsWith('--period=')) {
       const value = arg.slice('--period='.length)
       if (!USAGE_PERIODS.includes(value as UsagePeriod)) {
         throw new Error(`--period must be one of: ${USAGE_PERIODS.join(', ')}`)
       }
       parsed.period = value as UsagePeriod
+      periodSpecified = true
     } else if (arg === '--provider') {
       const [value, next] = valueAfter(args, index, '--provider'); index = next
       if (!PROVIDER_IDS.includes(value as ProviderId)) throw new Error(`unknown provider: ${value}`)
@@ -64,6 +68,11 @@ export function parseQueryArgs(args: string[]): ParsedQueryArgs {
     } else if (arg.startsWith('--account=')) {
       parsed.account = arg.slice('--account='.length)
       if (!parsed.account) throw new Error('--account requires a value')
+    }
+    else if (arg === '--session' || arg === '-s') {
+      [parsed.session, index] = valueAfter(args, index, arg)
+    } else if (arg.startsWith('--session=') || arg.startsWith('-s=')) {
+      parsed.session = arg.slice(arg.indexOf('=') + 1)
     }
     else if (arg === '--model') {
       [parsed.model, index] = valueAfter(args, index, '--model')
@@ -84,6 +93,10 @@ export function parseQueryArgs(args: string[]): ParsedQueryArgs {
     else parsed.positionals.push(arg)
   }
   if (parsed.compact) parsed.json = true
+  if (parsed.session !== undefined && !SESSION_ID_PATTERN.test(parsed.session)) {
+    throw new Error('--session requires 1–200 ASCII letters, digits, dots, underscores or hyphens; start with a letter/digit and do not use ".."')
+  }
+  if (parsed.session && !periodSpecified) parsed.period = 'all'
   if (parsed.refresh && parsed.cached) throw new Error('--refresh and --cached cannot be used together')
   return parsed
 }

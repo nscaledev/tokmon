@@ -14,13 +14,15 @@ const CACHE_TTL_MS = 60_000
 
 const SKIP_KINDS = new Set(['USAGE_EVENT_KIND_ABORTED_NOT_CHARGED', 'USAGE_EVENT_KIND_ERRORED_NOT_CHARGED'])
 
-interface TokenUsage { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; totalCents?: number }
-interface UsageEvent { timestamp?: string; model?: string; kind?: string; chargedCents?: number; tokenUsage?: TokenUsage }
-interface EventsResponse { totalUsageEventsCount?: number; usageEventsDisplay?: UsageEvent[] }
+interface TokenUsage { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalCents?: number }
+interface UsageEvent { timestamp?: string; model?: string; kind?: string; conversationId?: string; chargedCents?: number; tokenUsage?: TokenUsage }
+interface EventsResponse { totalUsageEventsCount?: number; usageEventsDisplay?: UsageEvent[] | null }
 
-type CacheSlot = { at: number; entries: Entry[]; complete: boolean }
+type CursorEntry = Entry & { conversationId?: string }
+type ApiResult = { entries: CursorEntry[]; complete: boolean }
+type CacheSlot = ApiResult & { at: number }
 const apiCache = new Map<string, CacheSlot>()
-const apiInflight = new Map<string, Promise<{ entries: Entry[]; complete: boolean }>>()
+const apiInflight = new Map<string, { refresh: boolean; promise: Promise<ApiResult> }>()
 
 async function readToken(homeDir?: string): Promise<string | null> {
   const r = await runSqlite(cursorStateDb(homeDir), "SELECT value FROM ItemTable WHERE key='cursorAuth/accessToken' LIMIT 1;")
@@ -49,7 +51,7 @@ async function fetchPage(token: string, startMs: number, endMs: number, page: nu
   }
 }
 
-function eventToEntry(e: UsageEvent): Entry | null {
+function eventToEntry(e: UsageEvent): CursorEntry | null {
   if (e.kind && SKIP_KINDS.has(e.kind)) return null
   const rawTs = e.timestamp
   const ts = timestampMs(rawTs)
@@ -58,38 +60,40 @@ function eventToEntry(e: UsageEvent): Entry | null {
   const input = safeNum(tu.inputTokens)
   const output = safeNum(tu.outputTokens)
   const cacheRead = safeNum(tu.cacheReadTokens)
+  const cacheCreate = safeNum(tu.cacheWriteTokens)
   const charged = Number(e.chargedCents)
   const totalCents = Number(tu.totalCents)
   const cents = Number.isFinite(charged) && charged > 0
     ? charged
     : (Number.isFinite(totalCents) && totalCents > 0 ? totalCents : 0)
   const cost = cents > 0 ? cents / 100 : 0
-  if (cost <= 0 && input + output + cacheRead === 0) return null
+  if (cost <= 0 && input + output + cacheRead + cacheCreate === 0) return null
   return {
     ts,
-    id: `${ts}|${e.model ?? ''}|${input}|${output}|${cacheRead}|${cents}`,
+    id: `${e.conversationId ?? ''}|${ts}|${e.model ?? ''}|${input}|${output}|${cacheRead}|${cacheCreate}|${cents}`,
+    conversationId: e.conversationId,
     model: String(e.model ?? 'unknown'),
     cost,
     input,
     output,
-    cacheCreate: 0,
+    cacheCreate,
     cacheRead,
     cacheSavings: 0,
     count: 1,
   }
 }
 
-async function fetchApiEntries(homeDir?: string): Promise<{ entries: Entry[]; complete: boolean }> {
+async function fetchApiEntries(homeDir?: string, refresh = false): Promise<ApiResult> {
   const cacheKey = homeDir ?? ''
   const hit = apiCache.get(cacheKey)
-  if (hit && Date.now() - hit.at < CACHE_TTL_MS) return { entries: hit.entries, complete: hit.complete }
+  if (!refresh && hit && Date.now() - hit.at < CACHE_TTL_MS) return { entries: hit.entries, complete: hit.complete }
 
   const existing = apiInflight.get(cacheKey)
-  if (existing) return existing
+  if (existing && (!refresh || existing.refresh)) return existing.promise
 
-  const promise = (async () => {
+  const read = async (): Promise<ApiResult> => {
     const token = await readToken(homeDir)
-    if (!token) return { entries: [] as Entry[], complete: true }
+    if (!token) return { entries: [] as CursorEntry[], complete: false }
 
     const endMs = Date.now()
     const startMs = endMs - WINDOW_DAYS * 86_400_000
@@ -102,13 +106,15 @@ async function fetchApiEntries(homeDir?: string): Promise<{ entries: Entry[]; co
         complete = false
         break
       }
+      // Empty terminal pages may omit the repeated field or encode it as null.
       const batch = resp.usageEventsDisplay ?? []
+      if (!Array.isArray(batch)) { complete = false; break }
       events.push(...batch)
       if (batch.length < PAGE_SIZE) break
       if (page === MAX_PAGES) complete = false // hit ceiling; may be truncated
     }
 
-    const entries: Entry[] = []
+    const entries: CursorEntry[] = []
     for (const e of events) {
       const entry = eventToEntry(e)
       if (entry) entries.push(entry)
@@ -116,13 +122,17 @@ async function fetchApiEntries(homeDir?: string): Promise<{ entries: Entry[]; co
     // Only cache complete fetches so a blip can't suppress local composer rows for 60s.
     if (complete) apiCache.set(cacheKey, { at: Date.now(), entries, complete: true })
     return { entries, complete }
-  })()
+  }
 
-  apiInflight.set(cacheKey, promise)
+  // Serialize a force after a weaker read, including its cache write. Different
+  // conversations share this account pull, so equal-strength callers coalesce.
+  const promise = existing ? existing.promise.catch(() => {}).then(read) : read()
+  const pending = { refresh, promise }
+  apiInflight.set(cacheKey, pending)
   try {
     return await promise
   } finally {
-    apiInflight.delete(cacheKey)
+    if (apiInflight.get(cacheKey) === pending) apiInflight.delete(cacheKey)
   }
 }
 
@@ -216,4 +226,11 @@ export async function cursorDashboard(tz: string, homeDir?: string): Promise<Das
 
 export async function cursorTableFull(tz: string, homeDir?: string): Promise<TableData> {
   return tabulate(await cursorEntries(tableSince(tz), tz, homeDir), tz)
+}
+
+export async function cursorSessionTable(tz: string, sessionId: string, homeDir?: string, refresh = false): Promise<TableData | null> {
+  const result = await fetchApiEntries(homeDir, refresh)
+  if (!result.complete) throw new Error('Cursor session usage unavailable or incomplete; check login and retry')
+  const entries = result.entries.filter(entry => entry.conversationId === sessionId)
+  return entries.length > 0 ? tabulate(entries, tz) : null
 }
