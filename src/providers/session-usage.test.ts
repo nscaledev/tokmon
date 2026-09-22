@@ -106,7 +106,7 @@ test('Cursor conversation queries preserve cache writes, refresh, and fail close
   assert.deepEqual(await read(account, 'UTC', target), first)
   assert.equal((await read(account, 'UTC', target, true))?.daily[0].total, 153)
   assert.equal(requests, 2)
-  body = { error: 'unavailable' }
+  body = { usageEventsDisplay: {} }
   await assert.rejects(read(account, 'UTC', target, true), /unavailable or incomplete/)
   await assert.rejects(read({ ...account, homeDir: join(account.homeDir, 'no-login') }, 'UTC', target), /unavailable or incomplete/)
 })
@@ -131,6 +131,52 @@ test('captured Cursor wire shape preserves account and session cache-write total
     assert.equal(table?.daily[0].count, 1)
   }
 })
+
+// A live empty page captured 2026-09-22 omitted the field. The full first page
+// below is synthetic, expanded from the sanitized one-event production fixture.
+for (const [name, body, complete] of [
+  ['omitted', {}, true],
+  ['null', { usageEventsDisplay: null }, true],
+  ['empty array', { usageEventsDisplay: [] }, true],
+  ['object', { usageEventsDisplay: {} }, false],
+  ['false', { usageEventsDisplay: false }, false],
+  ['zero', { usageEventsDisplay: 0 }, false],
+  ['empty string', { usageEventsDisplay: '' }, false],
+] as const) {
+  test(`Cursor pagination: ${name} terminal field preserves cache completeness`, async t => {
+    const account = await cursorAccount(t)
+    const event = (await cursorFixture()).usageEventsDisplay[0]
+    const day = Math.floor(Date.now() / 86_400_000) * 86_400_000
+    const firstPage = { usageEventsDisplay: Array.from({ length: 1000 }, (_, i) => ({
+      ...event, timestamp: String(day + i),
+    })) }
+    let requests = 0
+    t.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+      requests++
+      const { page, pageSize } = JSON.parse(String(init?.body))
+      assert.equal(pageSize, 1000)
+      assert.ok(page === 1 || page === 2, 'the terminal page must end pagination')
+      return Response.json(page === 1 ? firstPage : body)
+    })
+    const readAccount = () => PROVIDERS.cursor.fetchTable!(account, 'UTC')
+    const readSession = () => PROVIDERS.cursor.fetchSessionTable!(account, 'UTC', target)
+    const whole = await readAccount()
+    assert.equal(whole?.daily[0].total, 53_000)
+    assert.equal(whole?.daily[0].cacheCreate, 11_000)
+    assert.equal(whole?.daily[0].count, 1000)
+    assert.equal(requests, 2)
+    if (complete) {
+      assert.deepEqual(await readSession(), whole)
+      assert.deepEqual(await readAccount(), whole)
+      assert.equal(requests, 2, 'complete pages must populate the shared account cache')
+    } else {
+      await assert.rejects(readSession(), /unavailable or incomplete/)
+      assert.equal(requests, 4, 'malformed pages must not populate the account cache')
+      await readAccount()
+      assert.equal(requests, 6)
+    }
+  })
+}
 
 for (const firstSucceeds of [true, false]) {
   test(`Cursor force queues behind an ordinary account fetch (${firstSucceeds ? 'success' : 'failure'})`, async t => {

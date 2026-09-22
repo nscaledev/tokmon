@@ -16,7 +16,7 @@ const SKIP_KINDS = new Set(['USAGE_EVENT_KIND_ABORTED_NOT_CHARGED', 'USAGE_EVENT
 
 interface TokenUsage { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalCents?: number }
 interface UsageEvent { timestamp?: string; model?: string; kind?: string; conversationId?: string; chargedCents?: number; tokenUsage?: TokenUsage }
-interface EventsResponse { totalUsageEventsCount?: number; usageEventsDisplay?: UsageEvent[] }
+interface EventsResponse { totalUsageEventsCount?: number; usageEventsDisplay?: UsageEvent[] | null }
 
 type CursorEntry = Entry & { conversationId?: string }
 type ApiResult = { entries: CursorEntry[]; complete: boolean }
@@ -106,8 +106,9 @@ async function fetchApiEntries(homeDir?: string, refresh = false): Promise<ApiRe
         complete = false
         break
       }
-      if (!Array.isArray(resp.usageEventsDisplay)) { complete = false; break }
-      const batch = resp.usageEventsDisplay
+      // Empty terminal pages may omit the repeated field or encode it as null.
+      const batch = resp.usageEventsDisplay ?? []
+      if (!Array.isArray(batch)) { complete = false; break }
       events.push(...batch)
       if (batch.length < PAGE_SIZE) break
       if (page === MAX_PAGES) complete = false // hit ceiling; may be truncated
